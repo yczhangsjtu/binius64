@@ -176,6 +176,11 @@ flock 的 `CircuitBuilder` wiring 与 witness `Wiring(Gkr(ProductMismatch))` 另
      logup* 数据内存(M[i]=mem_val)。**接线点**: mem_val[t] 既是 Spartan load 输出又是
      数据内存 looker claim。512 mul, n_private=0(透明), 闭环+拒假。= 第一台证明含内存
      访问循环程序的二元域 zkVM。
+   - `full_vm_store.rs` ★★★ — **zkVM+store 写内存(读-改-写循环)**: 在 full_vm 基础上
+     加 store。程序 `loop { t=mem[0]; x1+=t; mem[0]=x1; i++; pc+=4 }`(N=3, 初始 mem[0]=2)。
+     loads:[2,2,4] stores:[2,4,8] x1:0→8。数据内存用**时间排序表** T[ts*ADDR+addr], load at
+     ts=2r store at ts=2r+1。**读见最近写**: 第2轮 load 读 4(上轮 store 写的)非初始 2 →
+     读旧值拒。256 mul, n_private=0。= 第一台证明 load+store RAW 循环的二元域 zkVM。
    - **结论**: Binius64 二元域后端(spartan-prover + logup*) **完整承载 Jolt 架构**:
      lookup 模块 + R1CS 模块 + **组合证明** + **内存指令** + **内存论证(读⊆写 +
      最近写判别 + 完整 SPICE 排序)** + **Jolt前端桥接** + **完整 zkVM 状态机(full_vm)**,

@@ -169,6 +169,17 @@ transcript 同时工作：
 - 512 mul, n_private=0(完全透明), 闭环 + **拒假**(load 读非内存值) ✓
 - = **第一台同时证明"循环+内存+整数加法"的二元域 zkVM**
 
+## 切片 17: `full_vm_store` — 完整 zkVM + store 写内存（读-改-写循环）★★★
+**在 full_vm 基础上加 store 写内存**，跑一个**读-改-写(RAW)循环**：
+- 程序: `loop { t=mem[0]; x1+=t; mem[0]=x1; i++; pc+=4 }`（N=3, 初始 mem[0]=2）
+- loads:[2,2,4], stores:[2,4,8], x1:0→8（=2+2+4）
+- **Spartan 状态机**: load + addi(x1+=t) + store(x1) + incr + pc 多轮
+- **logup* 程序内存**: P[pc]=word 取指
+- **logup* 数据内存(时间排序表)**: T[ts*ADDR+addr], load 在 ts=2r, store 在 ts=2r+1
+- **"读见最近写"**: 第2轮 load 读 4(上轮 store 写的), 非初始 2 —— **读旧值→拒** ✓
+- 256 mul, n_private=0(透明), 闭环 + 拒假
+- = 第一台证明"load+store 读-改-写循环"的二元域 zkVM
+
 ## 运行
 ```bash
 cd /home/yczhang/workspace/binius64
@@ -189,6 +200,7 @@ CARGO_BUILD_JOBS=4 cargo run -p binius-zkvm-slice --bin mem_arg_ts
 CARGO_BUILD_JOBS=4 cargo run -p binius-zkvm-slice --bin jolt_bridge
 CARGO_BUILD_JOBS=4 cargo run -p binius-zkvm-slice --bin mem_arg_spice
 CARGO_BUILD_JOBS=4 cargo run -p binius-zkvm-slice --bin full_vm
+CARGO_BUILD_JOBS=4 cargo run -p binius-zkvm-slice --bin full_vm_store
 ```
 
 ## 结论

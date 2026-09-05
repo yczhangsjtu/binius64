@@ -1,6 +1,6 @@
 # 二元域 zkVM 架构文档（Binius64 fork）
 
-> 版本: 2026-09-05 | 状态: 完整 zkVM 雏形（16 切片端到端验证，含完整 zkVM 状态机）
+> 版本: 2026-09-05 | 状态: 完整 zkVM 雏形（17 切片端到端验证，含 load+store 状态机）
 > 定位: 本仓库（`github.com/yczhangsjtu/binius64`）作为项目工作目录的**权威架构图景**。
 > 它综合既有 plans（`designs/`）与研究成果（`research/`），并叠加当前**已实现 + 已实测**的证据链。
 
@@ -79,6 +79,7 @@
 | 14 | `jolt_bridge` | **Jolt 前端 trace → 二元域后端**（`JoltTraceRow` u64 契约直连） | logup* | 3 store+2 load |
 | 15 | `mem_arg_spice` | **完整 SPICE 排序内存论证**（任意次写·全局时间戳·时间排序状态表） | logup* | 5 store+2 load, 拒过期值 |
 | 16 | `full_vm` | **完整 zkVM 状态机**（三机制整合：循环+内存+整数加法，同一 transcript） | combined | 512 mul, n_private=0 |
+| 17 | `full_vm_store` | **zkVM + store 写内存**（读-改-写循环，读见最近写） | combined | 256 mul, n_private=0 |
 
 ### 3.1 核心里程碑
 - **切片 8（阶乘）**：三要素（分支+多指令+整数乘法）合一，证明"成本 ∝ 指令数、与类型无关"在**含循环+乘法**的程序上成立。
@@ -88,6 +89,8 @@
 - **切片 16（full_vm）**：**工程整合达成**——一台状态机同时证明"循环+内存+整数加法"
   （Spartan 状态机 + logup* 程序内存取指 + logup* 数据内存论证，同一 transcript，
   512 mul，n_private=0）。= 第一台证明含内存访问循环程序的二元域 zkVM。
+- **切片 17（full_vm_store）**：**加 store 写内存**——读-改-写循环（load+store），
+  时间排序表证明"读见最近写"（第2轮 load 读上轮 store 写的值，读旧值→拒），256 mul。
 
 ### 3.2 性能实测（release, i5-12400F）
 | 切片 | mul 约束 | prove | verify |
@@ -191,6 +194,7 @@ output: eq_cycle · ra · ( val + γ·(val + inc) )
 | 14 | Jolt 前端桥接 | logup* |
 | 15 | 完整 SPICE 排序内存论证 | logup* |
 | 16 | full_vm 完整 zkVM 状态机 | combined |
+| 17 | full_vm_store 完整 zkVM+store(读-改-写循环) | combined |
 
 ```
 binius64/                       ← 项目根（fork 工作目录）
