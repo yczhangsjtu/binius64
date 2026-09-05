@@ -16,6 +16,8 @@
 //! The verifier re-derives both on one channel: the modular Jolt split
 //! (lookup subsystem + constraint subsystem) composing into a single proof.
 
+use crate::alu::*;
+
 use binius_compute::GlobalAllocator;
 use binius_field::{Field, Ghash128b as B128,
 	arch::{OptimalB128, OptimalPackedB128},
@@ -47,20 +49,7 @@ type LF = OptimalB128;
 type LP = OptimalPackedB128;
 type StdChallenger = HasherChallenger<sha2::Sha256>;
 
-fn to_bits(val: u64, nbits: usize) -> Vec<B128> {
-	(0..nbits).map(|i| B128::new(((val >> i) & 1) as u128)).collect()
-}
 
-fn fa<B: CircuitBuilder<Field = B128>>(b: &mut B, a: B::Wire, bb: B::Wire, cin: B::Wire) -> (B::Wire, B::Wire) {
-	let a_and_b = b.mul(a, bb);
-	let a_and_c = b.mul(a, cin);
-	let b_and_c = b.mul(bb, cin);
-	let axb = b.add(a, bb);
-	let sum = b.add(axb, cin);
-	let c1 = b.add(a_and_b, a_and_c);
-	let cout = b.add(c1, b_and_c);
-	(sum, cout)
-}
 
 /// Spartan: one `addi x5,x5,1` step. reg' = reg+1, pc' = pc+PC_INC.
 /// Segmented inout: [inst(32) | pc(8) | reg(8) | pc_next(8) | reg_next(8)].
@@ -105,7 +94,7 @@ fn drive_addi<B: CircuitBuilder<Field = B128>>(
 	}
 }
 
-fn main() {
+pub fn run_combined() {
 	// ---- Concrete program: `addi x5,x5,1` at pc = 0x00 ----
 	let inst_word: u64 = (1u64 << 20) | (5u64 << 15) | (0u64 << 12) | (5u64 << 7) | 0x13;
 	let init_pc: u64 = 0x00;
@@ -239,5 +228,14 @@ fn main() {
 		.is_err();
 		assert!(rejected, "verifier MUST reject a wrong program-table lookup");
 		println!("   soundness: verifier REJECTED a tampered instruction word in lookup ✓");
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	#[test]
+	fn combined() {
+		run_combined();
 	}
 }

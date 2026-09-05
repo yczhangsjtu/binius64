@@ -82,7 +82,7 @@ fn step_add<B: CircuitBuilder<Field = B128>>(
 	}
 }
 
-fn main() {
+pub fn run_pc_carry() {
 	// Reference/native PC trace.
 	let mut native_pcs = vec![0u64];
 	for _ in 0..STEPS {
@@ -204,4 +204,13 @@ fn main() {
 	let rejected = verifier.verify(&public, &mut bv).is_err();
 	assert!(rejected, "verifier MUST reject a tampered PC bit");
 	println!("   soundness: verifier REJECTED a tampered PC bit ✓");
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	#[test]
+	fn pc_carry() {
+		run_pc_carry();
+	}
 }

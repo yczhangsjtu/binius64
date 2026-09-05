@@ -16,6 +16,8 @@
 //! Cross-check: native 5! = 120 == committed final acc.
 //! Soundness: tampering the final acc (wrong factorial) is rejected.
 
+use crate::alu::*;
+
 use binius_field::{Field, Ghash128b as B128, arch::OptimalPackedB128};
 use binius_hash::StdHashSuite;
 use binius_spartan_frontend::{
@@ -35,78 +37,13 @@ const ROUNDS: usize = (N as usize) + 1; // 6
 type F = B128;
 type P = OptimalPackedB128;
 
-fn to_bits(val: u64, nbits: usize) -> Vec<B128> {
-	(0..nbits).map(|i| B128::new(((val >> i) & 1) as u128)).collect()
-}
 
-fn fa<B: CircuitBuilder<Field = B128>>(b: &mut B, a: B::Wire, bb: B::Wire, cin: B::Wire) -> (B::Wire, B::Wire) {
-	let a_and_b = b.mul(a, bb);
-	let a_and_c = b.mul(a, cin);
-	let b_and_c = b.mul(bb, cin);
-	let axb = b.add(a, bb);
-	let sum = b.add(axb, cin);
-	let c1 = b.add(a_and_b, a_and_c);
-	let cout = b.add(c1, b_and_c);
-	(sum, cout)
-}
 
 /// 8-bit increment +1 (full-adder chain).
-fn inc8<B: CircuitBuilder<Field = B128>>(b: &mut B, x: &[B::Wire]) -> Vec<B::Wire> {
-	let one_bits = to_bits(1, BITS);
-	let mut cin = b.constant(B128::ZERO);
-	let mut res = Vec::with_capacity(BITS);
-	for i in 0..BITS {
-		let ib = b.constant(one_bits[i]);
-		let xi = x[i];
-		let (sum, cout) = fa(b, xi, ib, cin);
-		res.push(sum);
-		cin = cout;
-	}
-	res
-}
 
 /// 8x8 -> 8-bit shift-add multiplier (low 8 bits): a * bb.
-fn mul8<B: CircuitBuilder<Field = B128>>(b: &mut B, a: &[B::Wire], bb: &[B::Wire]) -> Vec<B::Wire> {
-	let mut acc: Vec<B::Wire> = (0..BITS).map(|_| b.constant(B128::ZERO)).collect();
-	for k in 0..BITS {
-		let mut addend = Vec::with_capacity(BITS);
-		for j in 0..BITS {
-			if j >= k {
-				let g = b.mul(a[k], bb[j - k]);
-				addend.push(g);
-			} else {
-				addend.push(b.constant(B128::ZERO));
-			}
-		}
-		let mut cin = b.constant(B128::ZERO);
-		let mut new_acc = Vec::with_capacity(BITS);
-		for j in 0..BITS {
-			let aj = acc[j];
-			let ad = addend[j];
-			let (sum, cout) = fa(b, aj, ad, cin);
-			new_acc.push(sum);
-			cin = cout;
-		}
-		acc = new_acc;
-	}
-	acc
-}
 
 /// go = (x <= limit). Overflow test: x + (2^BITS - (limit+1)) overflows iff x>limit.
-fn leq8<B: CircuitBuilder<Field = B128>>(b: &mut B, x: &[B::Wire], limit: u64) -> B::Wire {
-	let addend = (1u64 << BITS) - (limit + 1);
-	let a = to_bits(addend, BITS);
-	let mut cin = b.constant(B128::ZERO);
-	for i in 0..BITS {
-		let xi = x[i];
-		let ib = b.constant(a[i]);
-		let (_, cout) = fa(b, xi, ib, cin);
-		cin = cout;
-	}
-	// carry_out = 1 means overflow (x > limit). go = 1 - carry_out.
-	let one = b.constant(B128::ONE);
-	b.add(cin, one)
-}
 
 /// Drive one loop round. Same op order on all builders.
 fn drive_round<B: CircuitBuilder<Field = B128>>(
@@ -143,7 +80,7 @@ fn drive_round<B: CircuitBuilder<Field = B128>>(
 	}
 }
 
-fn main() {
+pub fn run_factorial() {
 	let n: u64 = N;
 	let mut acc = 1u64;
 	let mut i = 1u64;
@@ -255,5 +192,14 @@ fn main() {
 		let rejected = verifier.verify(&public, &mut bv).is_err();
 		assert!(rejected, "verifier MUST reject a tampered factorial result");
 		println!("   soundness: verifier REJECTED a tampered factorial result ✓");
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	#[test]
+	fn factorial() {
+		run_factorial();
 	}
 }

@@ -19,6 +19,8 @@
 //! Cross-check: native straight-line xori evaluation matches final x5.
 //! Soundness: tampering an intermediate register value is rejected.
 
+use crate::alu::*;
+
 use binius_field::{Field, Ghash128b as B128, arch::OptimalPackedB128};
 use binius_hash::StdHashSuite;
 use binius_spartan_frontend::{
@@ -44,24 +46,11 @@ const IMMS: [u64; N] = [0x2A, 0x0F, 0x53, 0x80];
 type F = B128;
 type P = OptimalPackedB128;
 
-fn to_bits(val: u64, nbits: usize) -> Vec<B128> {
-	(0..nbits).map(|i| B128::new(((val >> i) & 1) as u128)).collect()
-}
 
 fn enc_xori(imm: u64) -> u64 {
 	((imm & 0xfff) << 20) | (5u64 << 15) | (0x4 << 12) | (5u64 << 7) | 0x13
 }
 
-fn fa<B: CircuitBuilder<Field = B128>>(b: &mut B, a: B::Wire, bb: B::Wire, cin: B::Wire) -> (B::Wire, B::Wire) {
-	let a_and_b = b.mul(a, bb);
-	let a_and_c = b.mul(a, cin);
-	let b_and_c = b.mul(bb, cin);
-	let axb = b.add(a, bb);
-	let sum = b.add(axb, cin);
-	let c1 = b.add(a_and_b, a_and_c);
-	let cout = b.add(c1, b_and_c);
-	(sum, cout)
-}
 
 /// Drive one instruction step: decode inst, reg_next = reg XOR imm, pc_next = pc + PC_INC.
 /// SAME op order on constraint / witness / instance so derived-wire ids align.
@@ -105,7 +94,7 @@ fn drive_step<B: CircuitBuilder<Field = B128>>(
 
 /// Per-step wire layout: [inst(IW) | pc(BITS) | reg(BITS) | pc_next(BITS) | reg_next(BITS)].
 
-fn main() {
+pub fn run_multi_inst() {
 	let insts: Vec<u64> = IMMS.iter().map(|&imm| enc_xori(imm)).collect();
 	let mut reg_trace = vec![START_X5];
 	for &imm in &IMMS {
@@ -223,5 +212,14 @@ fn main() {
 		let rejected = verifier.verify(&public, &mut bv).is_err();
 		assert!(rejected, "verifier MUST reject a tampered intermediate register");
 		println!("   soundness: verifier REJECTED a tampered intermediate x5 ✓");
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	#[test]
+	fn multi_inst() {
+		run_multi_inst();
 	}
 }

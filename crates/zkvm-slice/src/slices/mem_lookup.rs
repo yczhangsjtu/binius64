@@ -32,7 +32,7 @@ fn build_memory_table(contents: &[(usize, u32)], nbits: usize) -> FieldBuffer<P>
 	FieldBuffer::from_values(&values)
 }
 
-fn main() {
+pub fn run_mem_lookup() {
 	let alloc = GlobalAllocator;
 	let nbits = 3; // 3-bit addresses -> 2^3 = 8 memory slots (m = 3 variables)
 	let m = nbits;
@@ -177,4 +177,13 @@ fn main() {
 	println!();
 	println!("=> Binius64 logup* backend carries BOTH instruction-table and");
 	println!("   memory-consistency lookups on the binary field.");
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	#[test]
+	fn mem_lookup() {
+		run_mem_lookup();
+	}
 }

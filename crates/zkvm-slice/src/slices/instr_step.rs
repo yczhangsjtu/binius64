@@ -14,6 +14,8 @@
 //! Cross-check: native xori matches the committed final state.
 //! Soundness: a tampered instruction word (wrong opcode) is rejected.
 
+use crate::alu::*;
+
 use binius_field::{Field, Ghash128b as B128, arch::OptimalPackedB128};
 use binius_hash::StdHashSuite;
 use binius_spartan_frontend::{
@@ -35,25 +37,9 @@ const FUNCT3_XOR: u64 = 0x4;
 type F = B128;
 type P = OptimalPackedB128;
 
-fn to_bits(val: u64, nbits: usize) -> Vec<B128> {
-	(0..nbits).map(|i| B128::new(((val >> i) & 1) as u128)).collect()
-}
 
-fn native_xori(rs1: u64, imm: u64) -> u64 {
-	rs1 ^ imm
-}
 
 /// Full-adder: (sum, carry_out). Operates on generic builder Wires.
-fn fa<B: CircuitBuilder<Field = B128>>(b: &mut B, a: B::Wire, bb: B::Wire, cin: B::Wire) -> (B::Wire, B::Wire) {
-	let a_and_b = b.mul(a, bb);
-	let a_and_c = b.mul(a, cin);
-	let b_and_c = b.mul(bb, cin);
-	let axb = b.add(a, bb);
-	let sum = b.add(axb, cin);
-	let c1 = b.add(a_and_b, a_and_c);
-	let cout = b.add(c1, b_and_c);
-	(sum, cout)
-}
 
 /// Constrain the full decode+execute+writeback+pc-update step. Generic; all
 /// three builders (constraint/witness/instance) call it with the SAME op order
@@ -102,13 +88,13 @@ fn drive<B: CircuitBuilder<Field = B128>>(
 	}
 }
 
-fn main() {
+pub fn run_instr_step() {
 	// Concrete program: `xori x5, x5, 0x2A`  (RS1=5, RD=5, imm low=0x2A)
 	let imm: u64 = 0x2A;
 	let inst_word: u64 = ((imm & 0xfff) << 20) | (5u64 << 15) | (0x4 << 12) | (5u64 << 7) | 0x13;
 	let init_pc: u64 = 0x10;
 	let init_x5: u64 = 0xA5;
-	let final_x5 = native_xori(init_x5, imm);
+	let final_x5 = native_xor(init_x5, imm);
 	let final_pc = init_pc + PC_INC;
 
 	// ---- Constraint side: allocate inout ONCE, drive ----
@@ -143,11 +129,11 @@ fn main() {
 		to_bits(final_pc, BITS),
 		to_bits(final_x5, BITS),
 	);
-	let mut wi: Vec<_> = (0..IW).map(|i| wg.write_inout(inst_w[i], iw[i])).collect();
-	let mut wp: Vec<_> = (0..BITS).map(|i| wg.write_inout(pc_w[i], ip[i])).collect();
-	let mut wx: Vec<_> = (0..BITS).map(|i| wg.write_inout(x5_w[i], ix[i])).collect();
-	let mut wpn: Vec<_> = (0..BITS).map(|i| wg.write_inout(pcn_w[i], ipn[i])).collect();
-	let mut wxn: Vec<_> = (0..BITS).map(|i| wg.write_inout(x5n_w[i], ixn[i])).collect();
+	let wi: Vec<_> = (0..IW).map(|i| wg.write_inout(inst_w[i], iw[i])).collect();
+	let wp: Vec<_> = (0..BITS).map(|i| wg.write_inout(pc_w[i], ip[i])).collect();
+	let wx: Vec<_> = (0..BITS).map(|i| wg.write_inout(x5_w[i], ix[i])).collect();
+	let wpn: Vec<_> = (0..BITS).map(|i| wg.write_inout(pcn_w[i], ipn[i])).collect();
+	let wxn: Vec<_> = (0..BITS).map(|i| wg.write_inout(x5n_w[i], ixn[i])).collect();
 	drive(
 		&mut wg,
 		&wi,
@@ -162,11 +148,11 @@ fn main() {
 	// ---- Instance side (verifier recompute) ----
 	let mut ig = InstanceGenerator::new(&layout);
 	let (ii, iip, iix, iipn, iixn) = (iw, ip.clone(), ix.clone(), ipn.clone(), ixn.clone());
-	let mut mi: Vec<_> = (0..IW).map(|k| ig.write_inout(inst_w[k], ii[k])).collect();
-	let mut mp: Vec<_> = (0..BITS).map(|k| ig.write_inout(pc_w[k], iip[k])).collect();
-	let mut mx: Vec<_> = (0..BITS).map(|k| ig.write_inout(x5_w[k], iix[k])).collect();
-	let mut mpn: Vec<_> = (0..BITS).map(|k| ig.write_inout(pcn_w[k], iipn[k])).collect();
-	let mut mxn: Vec<_> = (0..BITS).map(|k| ig.write_inout(x5n_w[k], iixn[k])).collect();
+	let mi: Vec<_> = (0..IW).map(|k| ig.write_inout(inst_w[k], ii[k])).collect();
+	let mp: Vec<_> = (0..BITS).map(|k| ig.write_inout(pc_w[k], iip[k])).collect();
+	let mx: Vec<_> = (0..BITS).map(|k| ig.write_inout(x5_w[k], iix[k])).collect();
+	let mpn: Vec<_> = (0..BITS).map(|k| ig.write_inout(pcn_w[k], iipn[k])).collect();
+	let mxn: Vec<_> = (0..BITS).map(|k| ig.write_inout(x5n_w[k], iixn[k])).collect();
 	drive(
 		&mut ig,
 		&mi,
@@ -220,5 +206,14 @@ fn main() {
 		let rejected = verifier.verify(&public, &mut bv).is_err();
 		assert!(rejected, "verifier MUST reject a tampered final state");
 		println!("   soundness: verifier REJECTED a tampered final x5 ✓");
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	#[test]
+	fn instr_step() {
+		run_instr_step();
 	}
 }

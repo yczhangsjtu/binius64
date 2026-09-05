@@ -19,6 +19,8 @@
 //! This is the first program proven with a genuinely modular Jolt-like split:
 //! lookup(Fetch) + constraint(Execute) composed into a single proof.
 
+use crate::alu::*;
+
 use binius_compute::GlobalAllocator;
 use binius_field::{Field, Ghash128b as B128, arch::{OptimalB128, OptimalPackedB128}};
 use binius_hash::StdHashSuite;
@@ -51,25 +53,12 @@ type LF = OptimalB128;
 type LP = OptimalPackedB128;
 type StdChallenger = HasherChallenger<sha2::Sha256>;
 
-fn to_bits(val: u64, nbits: usize) -> Vec<B128> {
-	(0..nbits).map(|i| B128::new(((val >> i) & 1) as u128)).collect()
-}
 
 /// Encode `addi x5, x5, imm`.
 fn enc_addi(imm: u64) -> u64 {
 	((imm & 0xfff) << 20) | (5u64 << 15) | (0u64 << 12) | (5u64 << 7) | 0x13
 }
 
-fn fa<B: CircuitBuilder<Field = B128>>(b: &mut B, a: B::Wire, bb: B::Wire, cin: B::Wire) -> (B::Wire, B::Wire) {
-	let a_and_b = b.mul(a, bb);
-	let a_and_c = b.mul(a, cin);
-	let b_and_c = b.mul(bb, cin);
-	let axb = b.add(a, bb);
-	let sum = b.add(axb, cin);
-	let c1 = b.add(a_and_b, a_and_c);
-	let cout = b.add(c1, b_and_c);
-	(sum, cout)
-}
 
 /// One `addi x5,x5,imm` step: decode + reg'=reg+imm(inst[20..28]) + pc'=pc+4.
 /// Same op order on all builders.
@@ -115,7 +104,7 @@ fn drive_step<B: CircuitBuilder<Field = B128>>(
 	}
 }
 
-fn main() {
+pub fn run_multi_combined() {
 	let insts: Vec<u64> = IMMS.iter().map(|&imm| enc_addi(imm)).collect();
 	let mut x5_chain = vec![START_X5];
 	for &imm in &IMMS {
@@ -292,5 +281,14 @@ fn main() {
 		.is_err();
 		assert!(rejected, "verifier MUST reject a fetch claim absent from program memory");
 		println!("   soundness: verifier REJECTED a fetch claim absent from program memory ✓");
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	#[test]
+	fn multi_combined() {
+		run_multi_combined();
 	}
 }

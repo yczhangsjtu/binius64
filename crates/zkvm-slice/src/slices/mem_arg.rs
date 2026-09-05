@@ -20,7 +20,7 @@
 //! single-address case: the argument scales to arbitrary address sets.
 
 use binius_compute::GlobalAllocator;
-use binius_field::{arch::{OptimalB128, OptimalPackedB128}, Field};
+use binius_field::{arch::{OptimalB128, OptimalPackedB128}};
 use binius_ip::{channel::IPVerifierChannel, logup_star};
 use binius_ip_prover::{channel::IPProverChannel, logup_star::Looker};
 use binius_math::{FieldBuffer, multilinear::evaluate::evaluate};
@@ -36,7 +36,7 @@ struct MemOp {
 	value: u64,
 }
 
-fn main() {
+pub fn run_mem_arg() {
 	let alloc = GlobalAllocator;
 	let nbits = 4; // 4-bit addresses -> 2^4 = 16 slots (m = 4 variables)
 	let m = nbits;
@@ -198,4 +198,13 @@ fn main() {
 	println!();
 	println!("=> Binius64 logup* carries the random-access MEMORY ARGUMENT itself,");
 	println!("   not just a hand-given lookup: store+load all bind to the same table.");
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	#[test]
+	fn mem_arg() {
+		run_mem_arg();
+	}
 }

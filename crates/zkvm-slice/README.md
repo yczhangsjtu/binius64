@@ -1,12 +1,30 @@
-# binius-zkvm-slice — Binius64 lookup 承载 zkVM 子问题的验证切片
+# binius-zkvm-slice — Binius64 zkVM 验证 crate
 
-**日期**: 2026-09-01 → 2026-09-05 | **状态**: 19 个切片均 prove→verify 端到端通过（含 soundness 拒假）
+**日期**: 2026-09-01 → 2026-09-05 | **状态**: 已重构为 **lib crate**（`src/lib.rs`），
+20 个验证切片作为模块（`src/slices/*.rs`）暴露为 `#[test]`。
 
 > ⚠️ **诚实勘误（2026-09-05 经逐行代码审查）**：这些切片验证的是**单机制可行**，
 > **不是**一个完整的 zkVM，**未实现**真正的内存论证（时序/排序）、**未实现**通用的
 > 跨行状态机（寄存器/PC 传递）。"读见最近写"多处为 **native 程序把正确值直接填进表**、
 > logup* 只证明一致性（claim∈表），**不证明时序（最近写）**。真实性与边界见下方各切片
 > 标注（⚠️=夸大/需修正，⭐=真正实现）。
+
+## 结构（重构后）
+- `src/lib.rs` — crate 根，`pub mod alu` / `pub mod encode`，`#[path]` 引入 20 个切片模块
+- `src/alu.rs` — **共享 ALU 工具**：`to_bits`/`fa`/`add_constant`/`inc8`/`mul8`/`leq8`/`native_xor`/`assert_bits`
+  （此前 `to_bits` 重复 13 次、`fa` 重复 12 次 → 现在各一处）
+- `src/encode.rs` — **共享 RISC-V 编码**：`OP_*`/`F3_*`/`enc_addi`/`enc_add`/`enc_lw`/`enc_sw`/`enc_beq` + word 字段提取
+- `src/slices/*.rs` — 20 个验证切片，每个 `fn main()` 改成 `pub fn run_<name>()`，末尾附 `#[test]`
+
+## 运行（用测试代替 cargo run）
+```bash
+# 全部 20 个切片的 prove→verify + 拒假测试
+CARGO_BUILD_JOBS=4 cargo test -p binius-zkvm-slice
+
+# 单个切片测试
+CARGO_BUILD_JOBS=4 cargo test -p binius-zkvm-slice --lib factorial
+```
+> 之前的 `cargo run --bin <name>`（20 次）已改为 `cargo test`（一次跑全部）。
 
 > 项目根见 `../../zkvm-project/`（设计文档、研究笔记、进度）。本 crate 是切片代码的
 > 权威所在（在 Binius64 workspace 内，用相对路径依赖其 crates，相对路径依赖已天然解决）。

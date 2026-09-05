@@ -20,10 +20,12 @@
 //! This proves a load/store program with memory-consistency in a single proof —
 //! the "read must see recent write" element a real zkVM needs.
 
+use crate::alu::*;
+
 use binius_compute::GlobalAllocator;
 use binius_field::{
 	arch::{OptimalB128, OptimalPackedB128},
-	Field, Ghash128b as B128,
+	Ghash128b as B128,
 };
 use binius_hash::StdHashSuite;
 use binius_ip::logup_star;
@@ -50,35 +52,9 @@ type LF = OptimalB128;
 type LP = OptimalPackedB128;
 type StdChallenger = HasherChallenger<sha2::Sha256>;
 
-fn to_bits(val: u64, nbits: usize) -> Vec<B128> {
-	(0..nbits).map(|i| B128::new(((val >> i) & 1) as u128)).collect()
-}
 
-fn fa<B: CircuitBuilder<Field = B128>>(b: &mut B, a: B::Wire, bb: B::Wire, cin: B::Wire) -> (B::Wire, B::Wire) {
-	let a_and_b = b.mul(a, bb);
-	let a_and_c = b.mul(a, cin);
-	let b_and_c = b.mul(bb, cin);
-	let axb = b.add(a, bb);
-	let sum = b.add(axb, cin);
-	let c1 = b.add(a_and_b, a_and_c);
-	let cout = b.add(c1, b_and_c);
-	(sum, cout)
-}
 
 /// One memory step's PC carry addition: pc' = pc + PC_INC.
-fn add_constant<B: CircuitBuilder<Field = B128>>(b: &mut B, x: &[B::Wire], c: u64) -> Vec<B::Wire> {
-	let cb = to_bits(c, BITS);
-	let mut cin = b.constant(B128::ZERO);
-	let mut out = Vec::with_capacity(BITS);
-	for i in 0..BITS {
-		let ib = b.constant(cb[i]);
-		let xi = x[i];
-		let (sum, cout) = fa(b, xi, ib, cin);
-		out.push(sum);
-		cin = cout;
-	}
-	out
-}
 
 /// Constrain the memory load/store program on a generic builder.
 /// Layout (inout): [x5(8) | addr(8 strip to ADDR_BITS low) | mem_w(8) | mem_r(8)
@@ -140,7 +116,7 @@ fn drive_mem<B: CircuitBuilder<Field = B128>>(
 	}
 }
 
-fn main() {
+pub fn run_mem_instr() {
 	// Program: x5 = 0x2A; store x5 -> mem[4]; load mem[4] -> x6. Expect x6 == 0x2A.
 	let x5v: u64 = 0x2A;
 	let addr_v: u64 = 0x4; // low ADDR_BITS
@@ -298,5 +274,14 @@ fn main() {
 		.is_err();
 		assert!(rejected, "verifier MUST reject a load value absent from memory");
 		println!("   soundness: verifier REJECTED a load claim absent from memory ✓");
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	#[test]
+	fn mem_instr() {
+		run_mem_instr();
 	}
 }

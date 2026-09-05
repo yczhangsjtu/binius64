@@ -27,6 +27,8 @@
 //! constant 5; ops are addi and beq only. This is the stepping stone from
 //! hard-coded semantics to word-driven (Jolt CircuitFlags) dispatch.
 
+use crate::alu::*;
+
 use binius_compute::GlobalAllocator;
 use binius_field::{Ghash128b as B128, Field, arch::{OptimalB128, OptimalPackedB128}};
 use binius_hash::StdHashSuite;
@@ -65,20 +67,7 @@ type LF = OptimalB128;
 type LP = OptimalPackedB128;
 type StdChallenger = HasherChallenger<sha2::Sha256>;
 
-fn to_bits(val: u64, nbits: usize) -> Vec<B128> {
-	(0..nbits).map(|i| B128::new(((val >> i) & 1) as u128)).collect()
-}
 
-fn fa<B: CircuitBuilder<Field = B128>>(b: &mut B, a: B::Wire, bb: B::Wire, cin: B::Wire) -> (B::Wire, B::Wire) {
-	let a_and_b = b.mul(a, bb);
-	let a_and_c = b.mul(a, cin);
-	let b_and_c = b.mul(bb, cin);
-	let axb = b.add(a, bb);
-	let sum = b.add(axb, cin);
-	let c1 = b.add(a_and_b, a_and_c);
-	let cout = b.add(c1, b_and_c);
-	(sum, cout)
-}
 
 /// Execute one cycle driven by the FETCHED word's opcode.
 /// `word` (bits), `x1`, `pc` in; `x1_next`, `pc_next` out.
@@ -164,7 +153,7 @@ fn execute_cycle<B: CircuitBuilder<Field = B128>>(
 	}
 }
 
-fn main() {
+pub fn run_full_vm_jolt() {
 	// ---- Native ground truth ----
 	let mut x1_chain = vec![0u64]; // x1 starts at 0
 	let mut pc_chain = vec![0x0u64];
@@ -344,4 +333,13 @@ fn log2_ceil(x: usize) -> usize {
 	let mut n = 0;
 	while (1usize << n) < x { n += 1; }
 	n
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	#[test]
+	fn full_vm_jolt() {
+		run_full_vm_jolt();
+	}
 }

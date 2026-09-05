@@ -16,7 +16,7 @@
 //! This demonstrates the actual swap: keep Jolt's frontend, prove with Binius64.
 
 use binius_compute::GlobalAllocator;
-use binius_field::{arch::{OptimalB128, OptimalPackedB128}, Field};
+use binius_field::{arch::{OptimalB128, OptimalPackedB128}};
 use binius_ip::{channel::IPVerifierChannel, logup_star};
 use binius_ip_prover::{channel::IPProverChannel, logup_star::Looker};
 use binius_math::FieldBuffer;
@@ -90,7 +90,7 @@ impl JoltTraceRow {
 /// A Jolt-style memory access event extracted from a trace row.
 enum Access { Write { addr: u64, ver: u32, value: u64 }, Read { addr: u64, value: u64 } }
 
-fn main() {
+pub fn run_jolt_bridge() {
 	let alloc = GlobalAllocator;
 
 	// ---- Build a real trace via the Jolt frontend contract ----
@@ -278,4 +278,13 @@ fn log2_ceil(x: usize) -> usize {
 	let mut n = 0;
 	while (1usize << n) < x { n += 1; }
 	n
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	#[test]
+	fn jolt_bridge() {
+		run_jolt_bridge();
+	}
 }

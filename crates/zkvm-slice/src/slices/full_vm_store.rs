@@ -27,6 +27,8 @@
 //!      that claims a value that was NOT current at its timestamp is rejected
 //!      (read sees the most recent write).
 
+use crate::alu::*;
+
 use binius_compute::GlobalAllocator;
 use binius_field::{Ghash128b as B128, Field, arch::{OptimalB128, OptimalPackedB128}};
 use binius_hash::StdHashSuite;
@@ -59,20 +61,7 @@ type LF = OptimalB128;
 type LP = OptimalPackedB128;
 type StdChallenger = HasherChallenger<sha2::Sha256>;
 
-fn to_bits(val: u64, nbits: usize) -> Vec<B128> {
-	(0..nbits).map(|i| B128::new(((val >> i) & 1) as u128)).collect()
-}
 
-fn fa<B: CircuitBuilder<Field = B128>>(b: &mut B, a: B::Wire, bb: B::Wire, cin: B::Wire) -> (B::Wire, B::Wire) {
-	let a_and_b = b.mul(a, bb);
-	let a_and_c = b.mul(a, cin);
-	let b_and_c = b.mul(bb, cin);
-	let axb = b.add(a, bb);
-	let sum = b.add(axb, cin);
-	let c1 = b.add(a_and_b, a_and_c);
-	let cout = b.add(c1, b_and_c);
-	(sum, cout)
-}
 
 /// One round: load_val[t] (witness), x1' = x1 + load_val, store x1' back,
 /// i' = i + 1, pc' = pc + 4. Same op order on every builder.
@@ -116,7 +105,7 @@ fn drive_round<B: CircuitBuilder<Field = B128>>(
 	}
 }
 
-fn main() {
+pub fn run_full_vm_store() {
 	// ---- Native ground truth ----
 	let mut load_vals = vec![0u64; N];
 	let mut stores = vec![0u64; N];
@@ -333,4 +322,13 @@ fn log2_ceil(x: usize) -> usize {
 	let mut n = 0;
 	while (1usize << n) < x { n += 1; }
 	n
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	#[test]
+	fn full_vm_store() {
+		run_full_vm_store();
+	}
 }

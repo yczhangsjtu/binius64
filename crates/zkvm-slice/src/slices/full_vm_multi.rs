@@ -27,6 +27,8 @@
 //!      at addr = i[r]&1 = r&1. A load claims T[ts_load, addr]; a store claims
 //!      T[ts_store, addr]. Time ordering rejects a load claiming a stale value.
 
+use crate::alu::*;
+
 use binius_compute::GlobalAllocator;
 use binius_field::{Ghash128b as B128, Field, arch::{OptimalB128, OptimalPackedB128}};
 use binius_hash::StdHashSuite;
@@ -63,20 +65,7 @@ type StdChallenger = HasherChallenger<sha2::Sha256>;
 /// i[r] = r, so the address is r&1.
 fn r_addr(r: usize) -> usize { r & 1 }
 
-fn to_bits(val: u64, nbits: usize) -> Vec<B128> {
-	(0..nbits).map(|i| B128::new(((val >> i) & 1) as u128)).collect()
-}
 
-fn fa<B: CircuitBuilder<Field = B128>>(b: &mut B, a: B::Wire, bb: B::Wire, cin: B::Wire) -> (B::Wire, B::Wire) {
-	let a_and_b = b.mul(a, bb);
-	let a_and_c = b.mul(a, cin);
-	let b_and_c = b.mul(bb, cin);
-	let axb = b.add(a, bb);
-	let sum = b.add(axb, cin);
-	let c1 = b.add(a_and_b, a_and_c);
-	let cout = b.add(c1, b_and_c);
-	(sum, cout)
-}
 
 /// One round: x1' = x1 + load_val; store_val = x1' + 1; i' = i + 1; pc' = pc + 4.
 /// `store_val` wire is constrained to x1_next + 1 (the value written back).
@@ -133,7 +122,7 @@ fn drive_round<B: CircuitBuilder<Field = B128>>(
 	}
 }
 
-fn main() {
+pub fn run_full_vm_multi() {
 	// ---- Native ground truth (interleaved RAW over 2 addresses) ----
 	let mut mem = [0u64; 4];
 	mem[0] = MEM_INIT[0];
@@ -364,4 +353,13 @@ fn log2_ceil(x: usize) -> usize {
 	let mut n = 0;
 	while (1usize << n) < x { n += 1; }
 	n
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	#[test]
+	fn full_vm_multi() {
+		run_full_vm_multi();
+	}
 }

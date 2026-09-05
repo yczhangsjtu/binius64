@@ -24,7 +24,7 @@
 //! write). A malicious load claiming 0x11 (an earlier version) is rejected by T.
 
 use binius_compute::GlobalAllocator;
-use binius_field::{arch::{OptimalB128, OptimalPackedB128}, Field};
+use binius_field::{arch::{OptimalB128, OptimalPackedB128}};
 use binius_ip::{channel::IPVerifierChannel, logup_star};
 use binius_ip_prover::{channel::IPProverChannel, logup_star::Looker};
 use binius_math::FieldBuffer;
@@ -34,7 +34,7 @@ type F = OptimalB128;
 type P = OptimalPackedB128;
 type StdChallenger = HasherChallenger<sha2::Sha256>;
 
-fn main() {
+pub fn run_mem_arg_ts() {
 	let alloc = GlobalAllocator;
 	let nbits = 4; // 4-bit addresses -> 16 slots. We use address space of 16.
 	let addr_mask = (1usize << nbits) - 1;
@@ -193,4 +193,13 @@ fn log2_ceil(x: usize) -> usize {
 	let mut n = 0;
 	while (1usize << n) < x { n += 1; }
 	n
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	#[test]
+	fn mem_arg_ts() {
+		run_mem_arg_ts();
+	}
 }

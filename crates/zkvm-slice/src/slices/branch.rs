@@ -16,6 +16,8 @@
 //! Both are committed as separate states and verified. Soundness: tampering
 //! the branch target must be rejected.
 
+use crate::alu::*;
+
 use binius_field::{Field, Ghash128b as B128, arch::OptimalPackedB128};
 use binius_hash::StdHashSuite;
 use binius_spartan_frontend::{
@@ -36,21 +38,8 @@ const FUNCT3_BEQ: u64 = 0x0;
 type F = B128;
 type P = OptimalPackedB128;
 
-fn to_bits(val: u64, nbits: usize) -> Vec<B128> {
-	(0..nbits).map(|i| B128::new(((val >> i) & 1) as u128)).collect()
-}
 
 /// Full-adder bit: (sum, carry_out).
-fn fa<B: CircuitBuilder<Field = B128>>(b: &mut B, a: B::Wire, bb: B::Wire, cin: B::Wire) -> (B::Wire, B::Wire) {
-	let a_and_b = b.mul(a, bb);
-	let a_and_c = b.mul(a, cin);
-	let b_and_c = b.mul(bb, cin);
-	let axb = b.add(a, bb);
-	let sum = b.add(axb, cin);
-	let c1 = b.add(a_and_b, a_and_c);
-	let cout = b.add(c1, b_and_c);
-	(sum, cout)
-}
 
 /// Drive one beq step: decode, compute taken, conditional pc update.
 /// Layout (matching allocation): [inst(32) | rs1(8) | rs2(8) | pc(8) | target(8) | pc_next(8)].
@@ -148,7 +137,7 @@ fn product_tree<B: CircuitBuilder<Field = B128>>(b: &mut B, vals: &[B::Wire]) ->
 	cur[0]
 }
 
-fn main() {
+pub fn run_branch() {
 	// Two concrete branch cases at pc=0x20.
 	// Case (a): rs1 == rs2 == 0x5A → taken → jump to target 0x40.
 	let pc_a: u64 = 0x20;
@@ -283,4 +272,13 @@ fn main() {
 	let rejected = verifier.verify(&public, &mut bv).is_err();
 	assert!(rejected, "verifier MUST reject a tampered branch result");
 	println!("   soundness: verifier REJECTED a tampered branch target ✓");
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	#[test]
+	fn branch() {
+		run_branch();
+	}
 }

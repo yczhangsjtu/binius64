@@ -35,7 +35,7 @@ fn xori_step<B: CircuitBuilder<Field = B128>>(b: &mut B, input: B::Wire, imm: u6
 	b.add(input, imm_wire)
 }
 
-fn main() {
+pub fn run_pc_glue() {
 	// Allocate the committed register-trace wires ONCE on the constraint side.
 	// Edge wires: [initial, after-step-1, after-step-2, after-step-3].
 	let mut cb = ConstraintBuilder::new();
@@ -130,5 +130,14 @@ fn main() {
 		let rejected = verifier.verify(&public, &mut bv).is_err();
 		assert!(rejected, "verifier MUST reject a tampered register value");
 		println!("   soundness: verifier REJECTED a tampered register value ✓");
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	#[test]
+	fn pc_glue() {
+		run_pc_glue();
 	}
 }

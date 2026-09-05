@@ -26,6 +26,8 @@
 //! logup* lookups (fetch + data memory). The program trace is materialized as
 //! `ExecRow`s; each row's semantics are enforced conditional on its opcode.
 
+use crate::alu::*;
+
 use binius_compute::GlobalAllocator;
 use binius_field::{Ghash128b as B128, Field, arch::{OptimalB128, OptimalPackedB128}};
 use binius_hash::StdHashSuite;
@@ -77,20 +79,7 @@ type LF = OptimalB128;
 type LP = OptimalPackedB128;
 type StdChallenger = HasherChallenger<sha2::Sha256>;
 
-fn to_bits(val: u64, nbits: usize) -> Vec<B128> {
-	(0..nbits).map(|i| B128::new(((val >> i) & 1) as u128)).collect()
-}
 
-fn fa<B: CircuitBuilder<Field = B128>>(b: &mut B, a: B::Wire, bb: B::Wire, cin: B::Wire) -> (B::Wire, B::Wire) {
-	let a_and_b = b.mul(a, bb);
-	let a_and_c = b.mul(a, cin);
-	let b_and_c = b.mul(bb, cin);
-	let axb = b.add(a, bb);
-	let sum = b.add(axb, cin);
-	let c1 = b.add(a_and_b, a_and_c);
-	let cout = b.add(c1, b_and_c);
-	(sum, cout)
-}
 
 /// Word fields. Real RISC-V: [31:20]imm [19:15]rs1 [14:12]funct3 [11:7]rd [6:0]opcode.
 /// We model the low 8 bits as the subsets we care about (see enc_* helpers).
@@ -202,7 +191,7 @@ fn run_program() -> (Vec<u64>, Vec<Row>) {
 	(prog, rows)
 }
 
-fn main() {
+pub fn run_zkvm() {
 	let (prog, rows) = run_program();
 	println!("INTEGRATED zkVM — one state machine, real RISC-V program (word-driven), one transcript");
 	println!("  program: addi x1/x2/x5/x6 init; loop {{add x1,x1,x2; add x2,x2,x6; sw x1,0(x0); lw x3,0(x0); beq x2,x5,end}}");
@@ -494,4 +483,13 @@ fn log2_ceil(x: usize) -> usize {
 	let mut n = 0;
 	while (1usize << n) < x { n += 1; }
 	n
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	#[test]
+	fn zkvm() {
+		run_zkvm();
+	}
 }

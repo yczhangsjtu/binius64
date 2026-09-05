@@ -24,7 +24,7 @@
 //! most recent write" holds by the time ordering, for ANY number of writes.
 
 use binius_compute::GlobalAllocator;
-use binius_field::{arch::{OptimalB128, OptimalPackedB128}, Field};
+use binius_field::{arch::{OptimalB128, OptimalPackedB128}};
 use binius_ip::{channel::IPVerifierChannel, logup_star};
 use binius_ip_prover::{channel::IPProverChannel, logup_star::Looker};
 use binius_math::FieldBuffer;
@@ -34,7 +34,7 @@ type F = OptimalB128;
 type P = OptimalPackedB128;
 type StdChallenger = HasherChallenger<sha2::Sha256>;
 
-fn main() {
+pub fn run_mem_arg_spice() {
 	let alloc = GlobalAllocator;
 
 	// ---- Memory access trace (global timestamps, arbitrary write counts) ----
@@ -170,4 +170,13 @@ fn log2_ceil(x: usize) -> usize {
 	let mut n = 0;
 	while (1usize << n) < x { n += 1; }
 	n
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	#[test]
+	fn mem_arg_spice() {
+		run_mem_arg_spice();
+	}
 }

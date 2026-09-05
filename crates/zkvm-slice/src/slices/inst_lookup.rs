@@ -53,7 +53,7 @@ fn build_and_table(nbits: usize) -> FieldBuffer<P> {
 	FieldBuffer::from_values(&values)
 }
 
-fn main() {
+pub fn run_inst_lookup() {
 	let alloc = GlobalAllocator;
 	let nbits = 3; // 3-bit operands -> 2^6 = 64-entry table (m = 6 variables)
 	let m = 2 * nbits;
@@ -142,4 +142,13 @@ fn main() {
 	println!("   table: 2^{m} = {} entries", table.len());
 	println!("   instructions: {} and-instructions from trace", trace.len());
 	println!("   proof closed: table MLE eval = {expected_table_eval:?}");
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	#[test]
+	fn inst_lookup() {
+		run_inst_lookup();
+	}
 }
