@@ -180,6 +180,18 @@ transcript 同时工作：
 - 256 mul, n_private=0(透明), 闭环 + 拒假
 - = 第一台证明"load+store 读-改-写循环"的二元域 zkVM
 
+## 切片 18: `full_vm_multi` — 完整 zkVM 多地址反复交替读写 ★★★
+**最强内存论证测试**：程序在两个地址交替读-改-写，每地址多次写，**读须见最近写**：
+- 程序: `loop { t=mem[i&1]; x1+=t; mem[i&1]=x1+1; i++; pc+=4 }`（N=4, mem[0]=1, mem[1]=5）
+- 地址 `i&1` 交替(0,1,0,1)；每地址写 2 次
+- loads:[1,5,2,7] stores:[2,7,9,16] x1:0→15(=1+5+2+7)
+- **读见最近写**: 轮2 load mem[0]=2(轮0写的,非初始1)；轮3 load mem[1]=7(轮1写的,非初始5)
+  —— **读初始值→拒** ✓
+- Spartan 状态机: load + addi + store(mem[i&1]=x1+1) + incr + pc；数据用时间排序表 T[ts*ADDR+addr],
+  load ts=2r, store ts=2r+1, addr=r&1
+- 512 mul, n_private=0(透明), 闭环 + 拒假
+- = 第一台证明"多地址反复交替读写"的二元域 zkVM
+
 ## 运行
 ```bash
 cd /home/yczhang/workspace/binius64
@@ -201,6 +213,7 @@ CARGO_BUILD_JOBS=4 cargo run -p binius-zkvm-slice --bin jolt_bridge
 CARGO_BUILD_JOBS=4 cargo run -p binius-zkvm-slice --bin mem_arg_spice
 CARGO_BUILD_JOBS=4 cargo run -p binius-zkvm-slice --bin full_vm
 CARGO_BUILD_JOBS=4 cargo run -p binius-zkvm-slice --bin full_vm_store
+CARGO_BUILD_JOBS=4 cargo run -p binius-zkvm-slice --bin full_vm_multi
 ```
 
 ## 结论

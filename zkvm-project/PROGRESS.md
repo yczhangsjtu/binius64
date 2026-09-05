@@ -181,6 +181,12 @@ flock 的 `CircuitBuilder` wiring 与 witness `Wiring(Gkr(ProductMismatch))` 另
      loads:[2,2,4] stores:[2,4,8] x1:0→8。数据内存用**时间排序表** T[ts*ADDR+addr], load at
      ts=2r store at ts=2r+1。**读见最近写**: 第2轮 load 读 4(上轮 store 写的)非初始 2 →
      读旧值拒。256 mul, n_private=0。= 第一台证明 load+store RAW 循环的二元域 zkVM。
+   - `full_vm_multi.rs` ★★★ — **多地址反复交替读写(最强内存论证)**: 程序
+     `loop { t=mem[i&1]; x1+=t; mem[i&1]=x1+1; i++; pc+=4 }`(N=4, mem[0]=1, mem[1]=5)。
+     地址 i&1 交替(0,1,0,1), 每地址写 2 次(地址0:轮0/2, 地址1:轮1/3)。loads:[1,5,2,7]
+     stores:[2,7,9,16] x1:0→15。**读见最近写**: 轮2 load mem[0]=2(轮0写的,非初始1),
+     轮3 load mem[1]=7(轮1写的,非初始5) → 读初始值拒。512 mul, n_private=0。= 第一台证明
+     多地址反复交替读写的二元域 zkVM。
    - **结论**: Binius64 二元域后端(spartan-prover + logup*) **完整承载 Jolt 架构**:
      lookup 模块 + R1CS 模块 + **组合证明** + **内存指令** + **内存论证(读⊆写 +
      最近写判别 + 完整 SPICE 排序)** + **Jolt前端桥接** + **完整 zkVM 状态机(full_vm)**,
