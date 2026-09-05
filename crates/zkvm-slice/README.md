@@ -204,6 +204,18 @@ transcript 同时工作：
 - 256 mul, n_private=0, 闭环 + **拒假**(取指词不在程序内存)
 - 诚实边界: 最小子集——仅 x1 活寄存器, limit 常量, 仅 addi/beq
 
+## 整合 zkVM 主代码: `zkvm` — 项目主入口（架构转向）★★★
+**从切片实验转向整合状态机**。`crates/zkvm-slice/src/bin/zkvm.rs` 是**项目主代码**，
+一台状态机、同一 transcript，证明含全部机制的真实 RISC-V 程序：
+- **word 驱动解码** addi/add/lw/sw/beq（opcode→funct3 分发，非硬编码）
+- **多寄存器** x0..x6（由 word 的 rs1/rd 字段选择）
+- **ALU** addi(立即数)+add(寄存器) + **内存访问** lw/sw（读见最近写, 时间排序表）
+- **分支 beq** 真实控制流（x2==x5 退出循环）+ logup* 取指
+- 程序: 初始化 x1/x2/x5/x6 后循环4轮 {add x1,x1,x2; add x2,x2,x6; sw x1,0(x0);
+  lw x3,0(x0); beq x2,x5,end}；x1=0+1+2+3=6, mem[0]=6, x3=6(读见最近写)
+- 24 行 trace, n_mul=2048, n_private=0(透明), 闭环 + **拒假**(篡改取指词→拒)
+- **此后所有新功能在此递增，不再用切片。**
+
 ## 运行
 ```bash
 cd /home/yczhang/workspace/binius64
@@ -227,6 +239,7 @@ CARGO_BUILD_JOBS=4 cargo run -p binius-zkvm-slice --bin full_vm
 CARGO_BUILD_JOBS=4 cargo run -p binius-zkvm-slice --bin full_vm_store
 CARGO_BUILD_JOBS=4 cargo run -p binius-zkvm-slice --bin full_vm_multi
 CARGO_BUILD_JOBS=4 cargo run -p binius-zkvm-slice --bin full_vm_jolt
+CARGO_BUILD_JOBS=4 cargo run -p binius-zkvm-slice --bin zkvm
 ```
 
 ## 结论

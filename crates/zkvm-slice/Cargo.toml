@@ -96,3 +96,7 @@ path = "src/bin/full_vm_multi.rs"
 [[bin]]
 name = "full_vm_jolt"
 path = "src/bin/full_vm_jolt.rs"
+
+[[bin]]
+name = "zkvm"
+path = "src/bin/zkvm.rs"

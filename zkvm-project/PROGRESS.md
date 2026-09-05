@@ -14,6 +14,13 @@
 
 ## M-A2（进行中，2026-09-01）：指令门 R1CS + Ligerito prove/verify
 
+
+### 整合 zkVM 主代码（架构转向，2026-09-05）
+- `crates/zkvm-slice/src/bin/zkvm.rs` — **项目主代码**。一台状态机、同一 transcript，证明
+  含全部机制的真实 RISC-V 程序：word 驱动解码(addi/add/lw/sw/beq) + 多寄存器(x0..x6) +
+  ALU + 内存访问(读见最近写, 时间排序表) + 分支(beq 真实控制流) + logup* 取指。
+  24 行 trace, n_mul=2048, n_private=0(透明), 闭环+拒假(篡改取指词→拒)。
+  **后续所有新功能在 zkvm.rs 上递增，不再用切片。**
 ### 代码结构（已完成，可编译可运行）
 
 #### `src/instgate.rs` — 指令门 R1CS + GateType

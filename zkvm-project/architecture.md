@@ -1,6 +1,6 @@
 # 二元域 zkVM 架构文档（Binius64 fork）
 
-> 版本: 2026-09-05 | 状态: 完整 zkVM 雏形（19 切片端到端验证，含 Jolt 风格 word 驱动执行）
+> 版本: 2026-09-05 | 状态: 整合 zkVM 主代码（crates/zkvm-slice/src/bin/zkvm.rs）。从切片实验转向整合状态机。切片 1-19 保留为机制验证记录，后续新功能在 zkvm.rs 上递增。
 > 定位: 本仓库（`github.com/yczhangsjtu/binius64`）作为项目工作目录的**权威架构图景**。
 > 它综合既有 plans（`designs/`）与研究成果（`research/`），并叠加当前**已实现 + 已实测**的证据链。
 
@@ -56,6 +56,12 @@
 **核心洞见**：Binius64 的 `logup* + spartan-prover` 与 Jolt 的 `Lasso/Shout + Spartan` 概念**一一对应**，且都能在**同一个 Fiat-Shamir transcript** 上组合成单一证明。
 
 ---
+
+## 2.5 整合 zkVM 主代码（架构转向）
+- `crates/zkvm-slice/src/bin/zkvm.rs` — **项目主代码**：一台状态机证明真实 RISC-V 程序
+  （word 驱动 addi/add/lw/sw/beq + 多寄存器 x0..x6 + ALU + 内存访问读见最近写 + 分支）。
+  同一 transcript 组合 Spartan(执行) + logup*(取指) + logup*(数据内存)。24 行 trace,
+  n_mul=2048, n_private=0(透明), 闭环+拒假。**此后所有新功能在此递增。**
 
 ## 3. 已实现证据链：15 个切片（全部端到端 + soundness 拒假）
 
