@@ -1,0 +1,78 @@
+[package]
+name = "binius-zkvm-slice"
+version = "0.1.0"
+edition = "2024"
+description = "Minimum validation slice: use Binius64 logup* to prove a RISC-V instruction lookup (AND) on binary field. Verifies that Binius64's binary-field lookup backend can carry zkVM instruction-table lookups."
+
+[dependencies]
+binius-compute = { path = "../compute" }
+binius-field = { path = "../field" }
+binius-hash = { path = "../hash" }
+binius-ip = { path = "../ip" }
+binius-ip-prover = { path = "../ip-prover" }
+binius-math = { path = "../math" }
+binius-spartan-frontend = { path = "../spartan-frontend" }
+binius-spartan-prover = { path = "../spartan-prover" }
+binius-spartan-verifier = { path = "../spartan-verifier" }
+binius-transcript = { path = "../transcript" }
+binius-utils = { path = "../utils" }
+rand.workspace = true
+sha2.workspace = true
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+[[bin]]
+name = "inst_lookup"
+path = "src/bin/inst_lookup.rs"
+
+[[bin]]
+name = "mem_lookup"
+path = "src/bin/mem_lookup.rs"
+
+[[bin]]
+name = "pc_glue"
+path = "src/bin/pc_glue.rs"
+
+[[bin]]
+name = "pc_carry"
+path = "src/bin/pc_carry.rs"
+
+[[bin]]
+name = "instr_step"
+path = "src/bin/instr_step.rs"
+
+[[bin]]
+name = "multi_inst"
+path = "src/bin/multi_inst.rs"
+
+[[bin]]
+name = "branch"
+path = "src/bin/branch.rs"
+
+[[bin]]
+name = "factorial"
+path = "src/bin/factorial.rs"
+
+[[bin]]
+name = "combined"
+path = "src/bin/combined.rs"
+
+[[bin]]
+name = "multi_combined"
+path = "src/bin/multi_combined.rs"
+
+[[bin]]
+name = "mem_instr"
+path = "src/bin/mem_instr.rs"
+
+[[bin]]
+name = "mem_arg"
+path = "src/bin/mem_arg.rs"
+
+[[bin]]
+name = "mem_arg_ts"
+path = "src/bin/mem_arg_ts.rs"
+
+[[bin]]
+name = "jolt_bridge"
+path = "src/bin/jolt_bridge.rs"

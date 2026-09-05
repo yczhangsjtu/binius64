@@ -1,0 +1,189 @@
+# binaryfield-zkvm — 进度记录
+
+二进制域 zkVM：项目方向已从 flock 转向 Binius64。见下方分节。
+
+## M-A1（完成，2026-08-31）：native RISC-V 参考 + trace 采集 ✓
+
+- `src/isasim.rs`：最小 RV32I 解释器（解码/编码/执行/trace），含自训语义。
+- `src/main.rs --release`：11 条指令 demo（LUI ADDI ADD SUB AND ORI XORI SLLI SRLI SRAI）
+  + 寄存器断言自校验（全部 passed）。native 实测 ~15-80 ns/instruction。
+- **对拍发现（trace 作为门电路的 ground-truth 锚点）**：
+  - ANDI/ORI/XORI 立即数是**符号扩展**（0xfff → -1），全位运算是规范语义。
+  - SRA 是 R-type（移位量取 rs2 寄存器），立即数右移必须用 I-type 的 SRAI。
+  - 移位 shamt 放 `imm[4:0]`、funct7 为 0/0x20；首版编码放错进 funct7 区导致 SRLI 被误判 ADDI。
+
+## M-A2（进行中，2026-09-01）：指令门 R1CS + Ligerito prove/verify
+
+### 代码结构（已完成，可编译可运行）
+
+#### `src/instgate.rs` — 指令门 R1CS + GateType
+- **Block layout** (K_LOG=10, K=1024 z-slots):
+  ```
+  F128 word 0 [bits 0,128):    instruction word at bits [0,32)
+  F128 word 1 [bits 128,256):  rs1 value at bits [128,160)
+  F128 word 2 [bits 256,384):  rs2 value at bits [256,288)
+  F128 word 3 [bits 384,512):  ALU result at bits [384,416)
+  F128 word 4 [bits 512,640):  carry-aux at bits [512,544)
+  F128 words 5-6 [bits 640,896): unused (zero)
+  F128 word 7 [bits 896,1024): constant-1 at bit 1023
+  ```
+- `build_matrices()` → (A_0, B_0) 稀疏布尔矩阵：
+  - 128 rows boolean+input（inst/rs1/rs2/result 各 32 bit, z[s]·1=z[s]）
+  - 31 rows carry-aux（quadratic: carry[i] = (x[i]⊕cin)·(y[i]⊕cin)）
+  - 1 row constant-1（z[1023]·z[1023]=z[1023]）
+  - 其余 zero padding
+- `GateType for Rv32AluGate`：`table()` → `TableType::from_block_r1cs`，`eval()` → decode+execute，`witness()` → DeferredToRows
+- `io_schema()` = [input(0), input(1), input(2), output(3)]
+- `pack_row()` — InstRow → z/a/b u64 buffers
+- `cross_check_rows()` — native vs gate 对拍
+- `compute_add_carry()` / `verify_carry()` — carry chain
+
+#### `src/gate_prove.rs` — Ligerito prove/verify
+- `build_circuit(rows, n_blocks_log)` — CircuitBuilder + b.value(actual) 传真实值
+- `generate_witness(rows, n_blocks_log)` — F128 packing + lincheck stripe transpose
+- `prove_verify(rows, n_blocks_log)` — UnionInstance + prove + verify
+
+#### `src/main.rs` — 主程序
+- 11 条 RV32I demo → native 执行 → trace_to_rows → carry verify → cross-check → prove/verify
+- Ligerito floor: n_blocks_log=12 → m_total=22 (≥MIN_DENSE_M)
+
+### 已验证 ✓
+- native execution + register assertions
+- carry chain verification for all rows
+- native-vs-rows cross-check (instruction word + result)
+- Ligerito config floor (m=22, 4096 gate slots)
+- Prover warm-up 成功（证明生成通过）
+- Lincheck 成功通过（从之前的 sumcheck-final 改善到 wiring GKR）
+
+### 当前阻塞：`Wiring(Gkr(ProductMismatch))`
+
+**错误完整信息**：
+```
+verify failed: Wiring(Gkr(ProductMismatch))
+```
+
+**分析**：
+1. Lincheck 通过 ✓ — witness 满足 R1CS 约束
+2. Wiring GKR 失败 — wiring permutation σ 的 product 不一致
+3. **根因**：`CircuitBuilder` 的 wiring（cell→committed polynomial position 映射）和我们 `generate_witness()` 的 bit packing 没有精确对齐
+
+**CircuitBuilder wiring 工作原理**（需要搞清楚）：
+- `io_schema` 定义 word-column 到 In/Out 的映射
+- Builder 把每个 gate slot 的 word-column 映射到 committed polynomial 的特定位置
+- 这个映射由 `Registry` 的 slot offset + `CellSpace` 的 wiring permutation σ 决定
+- 我们的 witness 必须按这个映射填数据，而非按自己的 bit layout
+
+**修复路径**（二选一）：
+- **路径 A**：搞清楚 builder 的 wiring 映射，让 witness packing 精确匹配
+- **路径 B**：绕过 CircuitBuilder，直接用 `BlockR1cs` + `Registry::new` + `UnionInstance::new` 构建底层结构（更可控但更底层）
+
+**关键参考**：
+- `anoncred.rs` 的 `build_ac_circuit()` + `ac_prove_verify()` — 成功的 CircuitBuilder 路径
+- `blake3.rs` 的 `generate_witness_batch_major_partial()` — 正确的 BatchMajor witness 生成
+- `common.rs` 的 `drive_witness_batch_major_partial()` — BatchMajor witness driver
+
+### R1CS 行数统计（设计文档 §3 对拍起点）
+| 操作 | Row 数 | 说明 |
+|------|--------|------|
+| boolean+input | 128 | inst/rs1/rs2/result 各32 bit |
+| carry-aux (ADD) | 31 | quadratic AND products |
+| constant-1 | 1 | z[1023] wire |
+| padding | 895 | zero (forces z[i]=0) |
+
+## 关键文件
+- `src/instgate.rs` — 指令门 R1CS + GateType + witness packing
+- `src/gate_prove.rs` — Ligerito prove/verify 集成
+- `src/isasim.rs` — native RV32I 参考（decode/eval/编码/trace）
+- `src/metrics.rs` — 计时/峰值内存
+- `src/main.rs` — CLI + 自校验 + prove/verify demo
+- `designs/baseline-zkvm-design.md` — 设计文档
+- `research/binary-field-zkvm-survey.md` — 领域调研
+
+---
+
+# == 2026-09-01 方向转换：flock → Binius64 ==
+
+## 背景
+flock 的 `CircuitBuilder` wiring 与 witness `Wiring(Gkr(ProductMismatch))` 另一会话未解。
+经调研，换用现成的二元域证明后端 Binius64 作为 baseline。
+
+## 本会话完成（详见对应文档）
+1. **调研**（research/）:
+   - `zkvm-vs-circuit-constraints-conceptual.md` — zkVM(素域) vs 电路约束 本质区别。
+     结论: zkVM 证明"程序执行 trace"(时序/指令表/内存argument); Binius64=电路后端无这些。
+   - `zkvm-backend-replacement-feasibility.md` — Jolt 是换后端阻力最小的现成素域 zkVM,
+     因其底层(Spartan+Lasso)与 Binius64(spartan-prover+logup*)概念一一对应。
+2. **决策文档**（designs/）:
+   - `binius64-baseline-decision.md` — Binius64 4 种词级约束+成本模型+实测基准。
+   - `binius64-constraint-proofs-and-zkvm-plan.md` — AND/BMUL/IMUL 证明机制详解 + zkVM 方案。
+   - `binius64-frontend-api-map.md` — frontend 门集与 RISC-V 指令一一对应 + API 清单。
+3. **代码**（binius64/crates/zkvm-slice/）— **五个最小切片证明+验证端到端通过**:
+   - `inst_lookup.rs` — AND 指令查表 (2^6=64 真值表), logup* prove→verify 闭环。
+   - `mem_lookup.rs` — 内存一致性 load 查表 (2^3=8 地址), logup* 闭环 + 拒假(soundness)。
+   - `pc_glue.rs` — R1CS glue (寄存器状态流转, 3×xori), Binius64 内置 Spartan prover
+     闭环 + 拒假(soundness)。
+   - `pc_carry.rs` — **PC 整数进位** (8-bit 全加器链, +1 步进), Spartan 闭环 + 拒假。
+     关键修复: witness/instance 必须镜像约束侧 derived-wire 分配顺序。
+   - `instr_step.rs` ★ — **首条完整 RV32I 指令执行闭环** `xori x5,x5,imm`:
+     取指(word)→译码(opcode/funct3)→执行(xori)→写回(x5)→PC+4, 128 mul, 闭环+拒假。
+     soundness 教训: 篡改 opcode 位使 witness walk 失败; 应篡改 public 段 final 值。
+   - `multi_inst.rs` ★★ — **多指令程序序列 trace**: 4 条 xori 顺序执行, 取指续流+
+     寄存器依赖链(reg[t+1]=reg[t]⊕imm[t])+PC 续流(+4), 512 mul, 闭环+拒假(篡改中间寄存器)。
+     关键: 共享状态 wire 用分段分配, witness/instance write_inout 顺序须匹配分段布局(非每步内嵌)。
+   - `branch.rs` ★★ — **条件分支 beq**: taken/not-taken 双情形, 相等检测用位级乘法树
+     taken=Π(1⊕rs1_i⊕rs2_i), 条件 PC 更新用布尔 MUX (taken·target+(1+taken)·(pc+4))。
+     128 mul, 闭环+拒假。= 循环/控制流前提。
+   - `factorial.rs` ★★★ — **含循环的真实程序(三要素合一)**: 计算 5!=120,
+     条件循环 {acc*=i; i++; while i<=n} 展开 6 轮。每轮: go=(i<=n)(进位溢出比较)
+     + 8-bit 移位加乘法器 acc'=go?acc*i:acc (布尔 MUX 冻结) + i'=go?i+1:i (全加器)。
+     512 mul, prove ~20-28ms, 闭环+拒假。排障: go 须用当前 i 而非 i+1(否则少乘一轮)。
+   - `combined.rs` ★★★ — **组合证明系统(架构核心)**: 一个 addi 步骤在**同一个
+     Fiat-Shamir transcript** 里同时证明 Spartan 状态流转 + logup* 程序内存查表。
+     logup* gamma 在 Spartan 公共输入 observe 之后采样 → 查表挑战依赖状态证明,
+     构成不可分割组合。128 mul, 闭环+拒假。= "后端替换 Jolt" 可行性最本质验证。
+   - `multi_combined.rs` ★★★ — **多指令组合证明(zKVM 雏形完成)**: 2 条 addi,
+     Spartan 逐条执行(寄存器链+PC续流+进位) + logup* 逐条取指(T[pc]=word),
+     同一 transcript。256 mul, 闭环+拒假(篡改为程序表不存在的取指 claim 被拒)。
+     排障: soundness 篡改 opcode 位致 witness walk 失败; 应篡改 logup* 取指
+     eval_claim 为程序表不存在的 word → verify 拒绝。
+   - `mem_instr.rs` ★★★ — **内存指令(读须见最近写 R-A-W)**: 程序 addi x5,0x2a; sw; lw,
+     证明 store 写值==x5, load 读入==x6, **R-A-W 内存门 mem_r==mem_w**, PC 续流。
+     logup* 内存表 T[addr] 对 store/load 两 looker 验证。128 mul, 闭环+拒假
+     (拒绝内存中不存在的 load 值)。= zkVM 四要素"内存论证"的单地址最小证明。
+   - `mem_arg.rs` ★★★ — **内存论证(memory argument, 子多重集合读⊆写)**: 4 地址交错
+     store/load, **8 个 looker(4 store + 4 load)全部锁定同一内存表 T**, 电路内强制
+     `load_value == T[addr] == store_value`。这正是避免 O(N·M) selectors 爆炸的
+     memory-bus+multiset 论证。soundness: 篡改 load 为从未 store 的值→**拒绝**。
+     = 与 mem_lookup(手工给表) 的本质区别: 这里的表**非自由**, 由 store 建立。
+   - `mem_arg_ts.rs` ★★★ — **带时间戳内存论证(同址多写·最近写判别)**: 地址3 写两次
+     (0x11->0x22), 拆分**两表**: 写日志 W[(addr,ver)]=val + 读状态 T[addr]=最近写值。
+     store 事件查 W, load 事件查 T。**load 读 T[addr] = 最近写**, 读旧值→**拒绝**。
+     关键 API: logup* prove/verify_reduction 接受**多表数组** `[TableLookup; 2]`,
+     每表独立 n_vars + lookers, 同一 transcript。诚实边界: version 显式给定(未含排序器)。
+   - `jolt_bridge.rs` ★★★ — **Jolt前端→Binius64二元域后端桥接(后端替换实锤)**:
+     复刻 Jolt 前端 `JoltTraceRow`/`RAMAccess` u64 访问器契约(含 LD/SD 物理行别名,照
+     `workspace/jolt/specs/proof-trace-row-layout.md`), 用域无关 u64 值喂给二元域
+     logup* 内存论证(W 写日志 + T 读状态), 证明"读见最近写", 拒旧值。
+     = 后端替换接口层可行。对照: `research/jolt-binius-memory-argument-mapping.md`。
+   - **结论**: Binius64 二元域后端(spartan-prover + logup*) **完整承载 Jolt 架构**:
+     lookup 模块 + R1CS 模块 + **组合证明** + **内存指令** + **内存论证(读⊆写 +
+     最近写判别)** + **Jolt前端桥接**, 已能端到端证明含循环/乘法/内存访问/读写一致性
+     的真实程序 = **完整 zkVM 雏形**。Jolt 源码分析(workspace/jolt)证实:
+     **memory-checking 语义(one-hot+increment)与二元域 logup* 同构**, 后端替换
+     困难点在域切换(BN254→char-2), 而非内存论证机制。
+     关键 API: `IPProverChannel::sample(&mut transcript)` 采样 gamma, 多表 logup*,
+     Spartan `prover.prove(witness, rng, &mut transcript)`, 同 transcript 串联。
+
+## 下一步 (M-B 起, 可选)
+1. 扩字宽到 RV32I(32-bit) 并覆盖更多指令(andi/slli), trace 用 isasim.rs。
+2. 内存参数升级为多地址置换(Spice 式/离线内存参数), 当前 mem_instr 是单地址 R-A-W。
+3. 把 11 切片固化为可复用库(crate), 接 CLI/测试套件, 做 native-vs-proof 交叉核对基准。
+4. 决策: 后端替换 Jolt vs 借鉴 Jolt 架构在 Binius64 内自建。
+
+## 关键文件 (新)
+- `research/zkvm-vs-circuit-constraints-conceptual.md`
+- `research/zkvm-backend-replacement-feasibility.md`
+- `designs/binius64-baseline-decision.md`
+- `designs/binius64-constraint-proofs-and-zkvm-plan.md`
+- `designs/binius64-frontend-api-map.md`
+- `../binius64/crates/zkvm-slice/{README.md, src/bin/inst_lookup.rs, src/bin/mem_lookup.rs, src/bin/pc_glue.rs, src/bin/pc_carry.rs, src/bin/instr_step.rs, src/bin/multi_inst.rs, src/bin/branch.rs, src/bin/factorial.rs, src/bin/combined.rs, src/bin/multi_combined.rs, src/bin/mem_instr.rs}`
