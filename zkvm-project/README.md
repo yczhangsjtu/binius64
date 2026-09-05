@@ -50,6 +50,8 @@ cargo run -p binius-zkvm-slice --bin <name>
 
 ## Rounding out
 
-See `zkvm-project/PROGRESS.md` for the build order and next steps, and
-`zkvm-project/research/jolt-binius-memory-argument-mapping.md` for the
-Jolt ↔ Binius64 memory-argument transcription map (backend-swap feasibility).
+- **`architecture.md`** — the authoritative system-architecture doc (thesis, tech stack,
+  the 14-slice evidence chain, Jolt↔Binius64 transcription map, roadmap). **Start here.**
+- `zkvm-project/PROGRESS.md` — build order & next steps.
+- `zkvm-project/research/jolt-binius-memory-argument-mapping.md` — the
+  Jolt ↔ Binius64 memory-argument transcription map (backend-swap feasibility).
