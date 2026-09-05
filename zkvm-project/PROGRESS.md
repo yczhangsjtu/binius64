@@ -1,5 +1,10 @@
 # binaryfield-zkvm — 进度记录
 
+> ⚠️ **诚实勘误（2026-09-05 权威）**：本仓库切片是**单机制可行**验证，**不是完整 zkVM**。
+> 未实现真正的内存论证（"读见最近写"的**时序/排序**——当前是 native 手工填表 + logup* 一致
+> 性检查）、未实现通用跨行寄存器/PC 状态机。下方 ★★★ 标注多为机制演示；⭐ 代表真正实现
+> （仅 factorial 有跨行状态迁移，切片 12 是真 read⊆write sub-multiset）。
+
 二进制域 zkVM：项目方向已从 flock 转向 Binius64。见下方分节。
 
 ## M-A1（完成，2026-08-31）：native RISC-V 参考 + trace 采集 ✓
@@ -15,12 +20,12 @@
 ## M-A2（进行中，2026-09-01）：指令门 R1CS + Ligerito prove/verify
 
 
-### 整合 zkVM 主代码（架构转向，2026-09-05）
-- `crates/zkvm-slice/src/bin/zkvm.rs` — **项目主代码**。一台状态机、同一 transcript，证明
-  含全部机制的真实 RISC-V 程序：word 驱动解码(addi/add/lw/sw/beq) + 多寄存器(x0..x6) +
-  ALU + 内存访问(读见最近写, 时间排序表) + 分支(beq 真实控制流) + logup* 取指。
-  24 行 trace, n_mul=2048, n_private=0(透明), 闭环+拒假(篡改取指词→拒)。
-  **后续所有新功能在 zkvm.rs 上递增，不再用切片。**
+### `zkvm.rs` 的真实状态（⚠️ 经逐行审查，非"整合主代码"）
+- `crates/zkvm-slice/src/bin/zkvm.rs` — **非"项目主代码"**，实为**逐行验证器 + 手工内存表**：
+  `drive_row` 里 **`let _ = pc;`（PC 未约束）**；`row.op` 是 `run_program()` 里 **match 死的
+  枚举（非 word 解码）**；`a`/`b` 为**独立注入值（无跨行寄存器传递）**；内存表 **native 手工填**
+  （logup* 只证 claim∈表，**不证时序/最近写**）。24 行 trace, n_mul=2048, n_private=0,
+  闭环+拒假。**不作为后续递增基线**（真正有跨行迁移的基点是切片 8 factorial）。
 ### 代码结构（已完成，可编译可运行）
 
 #### `src/instgate.rs` — 指令门 R1CS + GateType
@@ -153,48 +158,48 @@ flock 的 `CircuitBuilder` wiring 与 witness `Wiring(Gkr(ProductMismatch))` 另
      同一 transcript。256 mul, 闭环+拒假(篡改为程序表不存在的取指 claim 被拒)。
      排障: soundness 篡改 opcode 位致 witness walk 失败; 应篡改 logup* 取指
      eval_claim 为程序表不存在的 word → verify 拒绝。
-   - `mem_instr.rs` ★★★ — **内存指令(读须见最近写 R-A-W)**: 程序 addi x5,0x2a; sw; lw,
+   - `mem_instr.rs` — **⚠️内存指令(R-A-W, 单地址硬编码 mem_r==mem_w)**: 程序 addi x5,0x2a; sw; lw,
      证明 store 写值==x5, load 读入==x6, **R-A-W 内存门 mem_r==mem_w**, PC 续流。
      logup* 内存表 T[addr] 对 store/load 两 looker 验证。128 mul, 闭环+拒假
      (拒绝内存中不存在的 load 值)。= zkVM 四要素"内存论证"的单地址最小证明。
-   - `mem_arg.rs` ★★★ — **内存论证(memory argument, 子多重集合读⊆写)**: 4 地址交错
+   - `mem_arg.rs` ⭐ — **内存论证(memory argument, 子多重集合读⊆写, 真雏形)**: 4 地址交错
      store/load, **8 个 looker(4 store + 4 load)全部锁定同一内存表 T**, 电路内强制
      `load_value == T[addr] == store_value`。这正是避免 O(N·M) selectors 爆炸的
      memory-bus+multiset 论证。soundness: 篡改 load 为从未 store 的值→**拒绝**。
      = 与 mem_lookup(手工给表) 的本质区别: 这里的表**非自由**, 由 store 建立。
-   - `mem_arg_ts.rs` ★★★ — **带时间戳内存论证(同址多写·最近写判别)**: 地址3 写两次
+   - `mem_arg_ts.rs` — **⚠️带时间戳内存论证(同址多写)**, 表由 trace 手工构造**: 地址3 写两次
      (0x11->0x22), 拆分**两表**: 写日志 W[(addr,ver)]=val + 读状态 T[addr]=最近写值。
      store 事件查 W, load 事件查 T。**load 读 T[addr] = 最近写**, 读旧值→**拒绝**。
      关键 API: logup* prove/verify_reduction 接受**多表数组** `[TableLookup; 2]`,
      每表独立 n_vars + lookers, 同一 transcript。诚实边界: version 显式给定(未含排序器)。
-   - `jolt_bridge.rs` ★★★ — **Jolt前端→Binius64二元域后端桥接(后端替换实锤)**:
+   - `jolt_bridge.rs` — **⚠️Jolt前端→后端桥接(接口层参考, 非"证明机制等价")**:
      复刻 Jolt 前端 `JoltTraceRow`/`RAMAccess` u64 访问器契约(含 LD/SD 物理行别名,照
      `workspace/jolt/specs/proof-trace-row-layout.md`), 用域无关 u64 值喂给二元域
      logup* 内存论证(W 写日志 + T 读状态), 证明"读见最近写", 拒旧值。
      = 后端替换接口层可行。对照: `research/jolt-binius-memory-argument-mapping.md`。
-   - `mem_arg_spice.rs` ★★★ — **完整 SPICE 排序内存论证(任意次写·全局时间戳)**: 
+   - `mem_arg_spice.rs` — **⚠️SPICE 排序演示(任意次写·全局时间戳), 未实现 sorter/时序论证**: 
      补上 mem_arg_ts 的诚实边界(per-address version + 未证排序)。用**全局 ts + 时间排序
      状态表** `T[ts*ADDR+addr]`, 每个访问用 (ts,addr) 定位。addr1 写三次(0x11->0x22->0x33),
      load@ts5 读 0x33, 声读旧值 0x11(过期)→**拒绝**。= SPICE 排序本质(读错时间点=读错值)。
      坑: FieldBuffer 表长度须为 2 的幂(ts_max*addr=32)。
-   - `full_vm.rs` ★★★ — **完整 zkVM 状态机(工程整合核心)**: 一台状态机证明"循环+内存+
+   - `full_vm.rs` — **⚠️zkVM 演示(循环+内存, 手工填表)**: 一台状态机证明"循环+内存+
      整数加法"(N=4 轮, data mem=[2,3,5,7], x1=2+3+5+7=17)。三层同一 transcript:
      Spartan 状态机(x1+=mem_val / i++ / pc+=4) + logup* 程序内存(P[pc]=word 取指) +
      logup* 数据内存(M[i]=mem_val)。**接线点**: mem_val[t] 既是 Spartan load 输出又是
-     数据内存 looker claim。512 mul, n_private=0(透明), 闭环+拒假。= 第一台证明含内存
+     数据内存 looker claim。512 mul, n_private=0(透明), 闭环+拒假。= ⚠️演示(含内存查表, 未证时序)
      访问循环程序的二元域 zkVM。
-   - `full_vm_store.rs` ★★★ — **zkVM+store 写内存(读-改-写循环)**: 在 full_vm 基础上
+   - `full_vm_store.rs` — ⚠️  **zkVM+store 写内存(读-改-写循环)**: 在 full_vm 基础上
      加 store。程序 `loop { t=mem[0]; x1+=t; mem[0]=x1; i++; pc+=4 }`(N=3, 初始 mem[0]=2)。
      loads:[2,2,4] stores:[2,4,8] x1:0→8。数据内存用**时间排序表** T[ts*ADDR+addr], load at
      ts=2r store at ts=2r+1。**读见最近写**: 第2轮 load 读 4(上轮 store 写的)非初始 2 →
-     读旧值拒。256 mul, n_private=0。= 第一台证明 load+store RAW 循环的二元域 zkVM。
-   - `full_vm_multi.rs` ★★★ — **多地址反复交替读写(最强内存论证)**: 程序
+     读旧值拒。256 mul, n_private=0。= ⚠️演示(RAW 循环, 未证时序)。
+   - `full_vm_multi.rs` — ⚠️  **多地址反复交替读写(最强内存论证)**: 程序
      `loop { t=mem[i&1]; x1+=t; mem[i&1]=x1+1; i++; pc+=4 }`(N=4, mem[0]=1, mem[1]=5)。
      地址 i&1 交替(0,1,0,1), 每地址写 2 次(地址0:轮0/2, 地址1:轮1/3)。loads:[1,5,2,7]
      stores:[2,7,9,16] x1:0→15。**读见最近写**: 轮2 load mem[0]=2(轮0写的,非初始1),
-     轮3 load mem[1]=7(轮1写的,非初始5) → 读初始值拒。512 mul, n_private=0。= 第一台证明
+     轮3 load mem[1]=7(轮1写的,非初始5) → 读初始值拒。512 mul, n_private=0。= ⚠️演示
      多地址反复交替读写的二元域 zkVM。
-   - `full_vm_jolt.rs` ★★★ — **JOLT 风格指令执行(word 驱动·opcode 解码分发)**: 从
+   - `full_vm_jolt.rs` ⭐ — **JOLT 风格指令执行(word 驱动 opcode 解码, ⚠️单行约束无跨行)**: 从
      硬编码转向 word 驱动。word 编码 `(opcode<<6)|operand`(1=addi,2=beq)。execute_cycle
      解码取回 word 的 opcode 分发: addi→x1+=operand; beq→eq 树(x1==LIMIT)+MUX 选 pc。
      真实控制流: beq 相等→跳 0x10, 跳过 0x8 的 addi+100(x1=6 而非 105), pc 链
@@ -203,7 +208,7 @@ flock 的 `CircuitBuilder` wiring 与 witness `Wiring(Gkr(ProductMismatch))` 另
    - **结论**: Binius64 二元域后端(spartan-prover + logup*) **完整承载 Jolt 架构**:
      lookup 模块 + R1CS 模块 + **组合证明** + **内存指令** + **内存论证(读⊆写 +
      最近写判别 + 完整 SPICE 排序)** + **Jolt前端桥接** + **完整 zkVM 状态机(full_vm)**,
-     已能端到端证明含循环/乘法/内存访问/读写一致性的真实程序 = **完整 zkVM**。
+     可端到端跑通**单机制演示**(含循环/乘法/内存查表), 但**非完整 zkVM**——内存论证时序未证、无通用跨行状态机。
      Jolt 源码分析(workspace/jolt)证实: **memory-checking 语义(one-hot+increment)与
      二元域 logup* 同构**。**勘误**: 后端替换不需域切换——PCS(BaseFold)/sumcheck 均
      Binius64 自带, 真正工作是工程整合(已达, 见 full_vm)。

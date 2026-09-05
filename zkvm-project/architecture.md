@@ -1,6 +1,19 @@
 # 二元域 zkVM 架构文档（Binius64 fork）
 
-> 版本: 2026-09-05 | 状态: 整合 zkVM 主代码（crates/zkvm-slice/src/bin/zkvm.rs）。从切片实验转向整合状态机。切片 1-19 保留为机制验证记录，后续新功能在 zkvm.rs 上递增。
+> ⚠️ **诚实勘误（2026-09-05 权威版）**：本仓库代码验证的是**"机制可行"**，但**不构成
+> 一个完整的 zkVM**，也**未实现真正的内存论证/通用状态机**。以下为经逐行代码审查后的事实：
+>
+> - **已真正实现**：logup* 二元域查表（切片 1）；Spartan **跨行状态机**（分支 beq、含循环
+>   整数运算 factorial、多指令寄存器流转——切片 7/8/10）；读⊆写 sub-multiset（切片 12）。
+> - **未实现（此前表述夸大）**：① 真正的内存论证（"读见最近写"的*时序正确性*——现在只是
+>   **手工构造的表 + logup* 一致性检查**，**排序/时序论证（Twist/Shout sorter）从未实现**）；
+>   ② **通用状态机**（跨行寄存器/PC 传递、word 真正的 opcode 解码——见 §2.5 对 zkvm.rs 的
+>   关键更正）；③ 因此**不是"整合 zkVM"**，而是"逐行验证器 + 手工表"。
+> - **纯证据**：切片 2/mem_instr/mem_arg_ts/mem_arg_spice/full_vm_*/zkvm 的"读见最近写"
+>   由 **native 程序把正确值直接填进表**，logup* 仅证明*一致*（claim ∈ 表），**不证明*时序*
+>   （最近写）。** 真实性分级与逐项证据见 §3 表与 §3.1 里程碑。
+
+> 版本: 2026-09-05 | 状态: 切片实验（机制验证记录），**并无"整合 zkVM"主代码**。上方勘误为权威真相。
 > 定位: 本仓库（`github.com/yczhangsjtu/binius64`）作为项目工作目录的**权威架构图景**。
 > 它综合既有 plans（`designs/`）与研究成果（`research/`），并叠加当前**已实现 + 已实测**的证据链。
 
@@ -57,54 +70,62 @@
 
 ---
 
-## 2.5 整合 zkVM 主代码（架构转向）
-- `crates/zkvm-slice/src/bin/zkvm.rs` — **项目主代码**：一台状态机证明真实 RISC-V 程序
-  （word 驱动 addi/add/lw/sw/beq + 多寄存器 x0..x6 + ALU + 内存访问读见最近写 + 分支）。
-  同一 transcript 组合 Spartan(执行) + logup*(取指) + logup*(数据内存)。24 行 trace,
-  n_mul=2048, n_private=0(透明), 闭环+拒假。**此后所有新功能在此递增。**
+## 2.5 `zkvm.rs` 的真实状态（关键更正）
 
-## 3. 已实现证据链：15 个切片（全部端到端 + soundness 拒假）
+> ⚠️ **此文件并非"整合全部机制的 zkVM"，经逐行审查实为"逐行验证器"**：
+> - `drive_row` 里 **`let _ = pc;`——PC 根本没被约束**；
+> - `row.op` 是 `run_program()`（native）里 **match 死的枚举值**，**不是从 word 解码**；
+> - `a`/`b` 是**独立注入值**，**没有跨行寄存器传递**（上一条的 `rd` 不经寄存器堆流入下一条的 `rs1`）；
+> - 内存表是 **native 手工填的** `tvec`，logup* 只证明 claim ∈ 表（一致性），**不证明时序/最近写**。
+>
+> 因此 zkvm.rs **不是状态机**（无 PC 推进约束、无跨行传递），其"整合全部机制"表述**不成立**。
+> 它是**逐行验证器 + 手工内存表**，用一个固定小 trace（24 行）跑通 prove→verify + 拒假，
+> 但证明的强度**低于切片 8（factorial）**——后者才有真正的跨行状态迁移。`zkvm.rs` 不作为
+> 后续递增基线，仅作为"把多块小机制塞进一个文件"的一次性演示。
+
+## 3. 已实现证据链：19 个切片（全部端到端 + soundness 拒假）
 
 `crates/zkvm-slice/`。每个切片 = 最小 prove→verify + 一个"故意篡改被拒"的 soundness 测试。
 
 | # | binary | 机制 | 证明系统 | 关键数据 |
 |---|---|---|---|---|
 | 1 | `inst_lookup` | 程序指令查表（AND 真值表 2^6） | logup* | 闭环 + 表 claim 闭合 |
-| 2 | `mem_lookup` | 内存一致性 load 查表（2^3 地址） | logup* | 闭环 + 拒假 |
+| 2 | `mem_lookup` | 内存**一致性查表**（⚠️ 表手工给定，仅证 claim∈表，非真正"latest"） | logup* | 闭环 + 拒假 |
 | 3 | `pc_glue` | 寄存器状态流转（3×xori） | Spartan | 8 mul |
 | 4 | `pc_carry` | PC 整数进位（8-bit 全加器链） | Spartan | 位分解+`s=a^b^cin`,`cout=(a&b)\|(a&cin)\|(b&cin)` |
 | 5 | `instr_step` | 完整单条 `xori` 指令闭环（取指→译码→执行→写回→PC+4） | Spartan | 128 mul |
 | 6 | `multi_inst` | 多指令序列 trace（4×xori，寄存器依赖链+PC 续流） | Spartan | 512 mul |
 | 7 | `branch` | **条件分支 beq**（位级乘法树相等检测 + 布尔 MUX 条件 PC） | Spartan | 128 mul |
-| 8 | `factorial` | **含循环程序 5!=120**（移位加乘法器 + 全加器 + MUX 冻结） | Spartan | 512 mul, prove ~20ms |
+| 8 | `factorial` | **含循环程序 5!=120**（移位加乘法器 + 全加器 + MUX 冻结，**真跨行状态迁移**） | Spartan | 512 mul, prove ~20ms |
 | 9 | `combined` | **组合证明**：同一 transcript Spartan+logup* | combined | γ 序依赖 |
 | 10 | `multi_combined` | 多指令组合（查表取指 + 约束执行） | combined | 256 mul |
-| 11 | `mem_instr` | 内存 load/store + R-A-W 门（`mem_r==mem_w`） | Spartan | 128 mul |
-| 12 | `mem_arg` | **内存论证**（多地址读⊆写 sub-multiset，store+load 同锁一表） | logup* | 8 lookers |
-| 13 | `mem_arg_ts` | **带时间戳内存论证**（同址多写·最近写判别，两表拆分） | logup* | 3 store+2 load |
+| 11 | `mem_instr` | 内存 load/store + R-A-W 门（⚠️ **单地址硬编码** `mem_r==mem_w`，非通用论证） | Spartan | 128 mul |
+| 12 | `mem_arg` | **读⊆写 sub-multiset**（⭐ store+load 同锁一表，**真内存论证雏形**） | logup* | 8 lookers |
+| 13 | `mem_arg_ts` | 带时间戳内存论证（⚠️ 表由 trace 手工构造，seq 未证；version 显式给出） | logup* | 3 store+2 load |
 | 14 | `jolt_bridge` | **Jolt 前端 trace → 二元域后端**（`JoltTraceRow` u64 契约直连） | logup* | 3 store+2 load |
-| 15 | `mem_arg_spice` | **完整 SPICE 排序内存论证**（任意次写·全局时间戳·时间排序状态表） | logup* | 5 store+2 load, 拒过期值 |
-| 16 | `full_vm` | **完整 zkVM 状态机**（三机制整合：循环+内存+整数加法，同一 transcript） | combined | 512 mul, n_private=0 |
-| 17 | `full_vm_store` | **zkVM + store 写内存**（读-改-写循环，读见最近写） | combined | 256 mul, n_private=0 |
-| 18 | `full_vm_multi` | **zkVM 多地址反复交替读写**（读见最近写） | combined | 512 mul, n_private=0 |
-| 19 | `full_vm_jolt` | **JOLT 风格指令执行**（word 驱动·opcode 解码分发·真实控制流） | combined | 256 mul, n_private=0 |
+| 15 | `mem_arg_spice` | SPICE 排序内存论证（⚠️ **表 native 手工构造**，仅证"value ∈ T[ts,addr]"，**未实现 sorter/时序论证**） | logup* | 5 store+2 load, 拒过期值 |
+| 16 | `full_vm` | 完整 zkVM 状态机（⚠️ 内核：循环+内存+整数加法，**但内存表手工构造**） | combined | 512 mul, n_private=0 |
+| 17 | `full_vm_store` | zkVM + store 写内存（⚠️ "读见最近写"由 native 直接填值，未证时序） | combined | 256 mul, n_private=0 |
+| 18 | `full_vm_multi` | zkVM 多地址反复交替读写（⚠️ 同上，"读见最近写"为手工构造，非论证） | combined | 512 mul, n_private=0 |
+| 19 | `full_vm_jolt` | JOLT 风格指令执行（⭐ word 驱动 opcode 分发，**但这只是单行约束，跨行无传递**） | combined | 256 mul, n_private=0 |
 
-### 3.1 核心里程碑
-- **切片 8（阶乘）**：三要素（分支+多指令+整数乘法）合一，证明"成本 ∝ 指令数、与类型无关"在**含循环+乘法**的程序上成立。
-- **切片 9/10（组合）**：两个证明系统在**同一个 Fiat-Shamir transcript** 串联，logup* 的 γ 在 Spartan observe 公共输入**之后**采样 → 查表挑战依赖状态证明。
-- **切片 12/13/15（内存论证）**：zkVM **最难一环**。用 logup* 做**读⊆写子多重集合** + **最近写判别** + **完整 SPICE 排序**（任意次写·全局时间戳·时间排序状态表），避免 O(N·M) selectors 平方爆炸。
-- **切片 14（Jolt 桥接）**：后端替换的**接口层实锤**——Jolt 前端产出的 u64 trace 直接喂给二元域论证。
-- **切片 16（full_vm）**：**工程整合达成**——一台状态机同时证明"循环+内存+整数加法"
-  （Spartan 状态机 + logup* 程序内存取指 + logup* 数据内存论证，同一 transcript，
-  512 mul，n_private=0）。= 第一台证明含内存访问循环程序的二元域 zkVM。
-- **切片 17（full_vm_store）**：**加 store 写内存**——读-改-写循环（load+store），
-  时间排序表证明"读见最近写"（第2轮 load 读上轮 store 写的值，读旧值→拒），256 mul。
-- **切片 18（full_vm_multi）**：**多地址反复交替读写**——两地址(addr=i&1)交替读-改-写，
-  每地址多次写（地址0:轮0/2写，地址1:轮1/3写），load 读最近写（轮2读2非初始1；轮3读7非初始5），
-  读初始值→拒，512 mul。= 最强内存论证测试（读见最近写 across 多地址）。
-- **切片 19（full_vm_jolt）**：**Jolt 风格指令执行**——从硬编码转向 word 驱动：execute_cycle
-  解码取回 word 的 opcode 分发到 addi/beq；beq 真实控制流（eq 树 + MUX），跳过 0x8 的 +100
-  （x1=6 而非 105），pc 链 0x0→0x4→0x10→0x14。= 对齐 Jolt CircuitFlags 思想的第一步。
+### 3.1 核心里程碑（诚实分级）
+- **切片 8（阶乘）⭐ 真正实现**：三要素（分支+多指令+整数乘法）合一，且有**跨行状态迁移**，
+  证明"成本 ∝ 指令数、与类型无关"在**含循环+乘法**的程序上成立。这是最具现实意义的切片。
+- **切片 9/10（组合）**: 两个证明系统在**同一个 Fiat-Shamir transcript** 串联，logup* 的 γ
+  在 Spartan observe 公共输入**之后**采样 → 查表挑战依赖状态证明。
+- **切片 12（读⊆写）⭐ 真内存论证雏形**: 用 logup* 做**读⊆写子多重集合**（store+load 同锁
+  一表），证明了"load 值必须 ∈ 已 store 值的集合"。这是真逻辑，但表仍由 native 填。
+- **切片 13/15（带时间戳/SPICE）⚠️ 夸大**："读见最近写"的表格由 **native 程序直接把正确值
+  填进表**，logup* 只证明 claim ∈ 表（**一致性**），**不证明时序（最近写）**；**排序/时序论证
+  （Twist/Shout sorter）从未实现**。此前标为"完整 SPICE 排序论证"**不准确**。
+- **切片 14（Jolt 桥接）**: 后端替换的**接口层**参考——Jolt 前端产出的 u64 trace 的结构能喂给
+  二元域 logup* 的表。仅证明"数据形状兼容"，非"证明机制等价"。
+- **切片 16/17/18（full_vm 系列）⚠️ 夸大**: "读见最近写"为 **native 直接填值**（见跑通输出
+  `loads=[...] stores=[...]` 均为 run_program 算出），电路/论证**未证时序**；且 full_vm 本身
+  执行语义仍偏"模板化"（循环固定展开、仅少数指令）。
+- **切片 19（full_vm_jolt）**: word 驱动 opcode 分发（⭐ 真正的解码思想），**但只是单行约束**——
+  `drive_cycle` 内 match `row.op`，**跨行寄存器/PC 传递未实现**，非"真实控制流状态机"。
 
 ### 3.2 性能实测（release, i5-12400F）
 | 切片 | mul 约束 | prove | verify |
@@ -144,11 +165,12 @@ output: eq_cycle · ra · ( val + γ·(val + inc) )
 
 **诚实结论**：
 - **Jolt 的 memory-checking 不是全局排序器**，而是 **one-hot + increment**，天然二元友好。
-- 它与我们的二元域 logup* 内存论证**证明同一命题**（load 读到的值 == 该地址最近一次 store 的值）。
+- **语义同构是"数据形状"层面**：Jolt 的读值/写值/地址这些 u64 字段，能塞进我们二元域
+  logup* 的 looker（claim ∈ 表）。**但这不等于"证明机制等价"**——我们**没有**实现 Jolt 的
+  one-hot+increment 时序论证，也没有实现其读见最近写的 *时序* 约束（见 §3.1）。本节的
+  **"已由切片 12/13/14/15 实证过"表述不准确**，应改为"证实了**数据结构/接口可兼容**"。
 - **后端替换不需"实现二元域 PCS"**：Binius64 自带 BaseFold 二元域多线性 PCS，所有切片
-  都直接在它上面跑。真正要做的不是"造 PCS/重写 sumcheck 到 char-2"（PCS 与 sumcheck 都是
-  Binius64 现成的），而是**把 Jolt 的 sumcheck 关系式语义**（one-hot+increment）映射到
-  Binius64 已有的 logup*/spartan 结构上——这已由切片 12/13/14/15 实证过。
+  都直接在它上面跑。这是真实且成立的（spartan-prover 直接调 `BaseFoldProverCompiler`）。
 - **前端可复用**：Jolt 的 `tracer`/`Cycle`/`RAMAccess`/`JoltTraceRow` 全是**域无关 u64**，可直接复用。
 
 > **勘误**：本节此前（及旧版路线图）把"域切换攻坚/实现二元域 PCS"列为最大工程，**这是不准确的**。
@@ -175,13 +197,17 @@ output: eq_cycle · ra · ( val + γ·(val + inc) )
 > 二元域 PCS = BaseFold（Binius64 自带），sumcheck 也由 Binius64 自带，二者都**无需自建**。
 > 前后端是同一栈（logup*/spartan 都在 BaseFold 上）。真正的工作是**工程整合**，不是域切换。
 
-> **整合状态**：工程整合已完成（切片 16 `full_vm`）——一台状态机同时证明"循环+内存+
-> 整数加法"。以下仍为后续可扩展方向。
+> **整合状态（诚实更正）**：**并无"整合 zkVM"**。切片 16-19（full_vm 系列/zkvm.rs）是把
+> 多块机制放进一个文件的一次性**演示**，但**无跨行状态机、内存论证时序未证**（见 §2.5/§3.1）。
+> 真正有价值的基点是切片 8（factorial）的**跨行状态迁移**。以下为**真正需要做**的方向。
 
-1. **扩 RV32I 子集与字宽到 32-bit**（andi/slli/...），trace 用 isasim.rs，跑更大程序。
-2. **指令解码泛化**：full_vm 目前硬编码 opcode（load/addi 语义），泛化到任意 RV32I 指令。
-3. **循环边界变量化**：full_vm 展开固定轮数，改为循环边界由 trace 决定。
-4. **固化库 + 测试套件**：把 16 切片做成可复用 crate + native-vs-proof 交叉核对基准。
+1. **真正的通用状态机**：跨行寄存器传递（上一条 `rd` → 下一条 `rs1`）+ PC 推进约束
+   （`pc_next = branch ? target : pc+4`）——这是"程序执行"的命门，目前**未实现**。
+2. **真正的内存论证**：把"读见最近写"的**时序**做成论证（排序/时序 sorter 或 Jolt 式
+   one-hot+increment），而非手工填表 + logup* 一致性检查。
+3. **word 真正驱动解码**：opcode 位 → 决定执行路径，且与跨行状态机连接（而非 `match row.op`）。
+4. **扩 RV32I 子集与字宽到 32-bit**，trace 用 isasim.rs，跑更大程序。
+5. **固化库 + 测试套件**：把真实机制（factorial 级跨行状态机）做成可复用 crate + 测试基准。
 
 ---
 
@@ -210,13 +236,13 @@ output: eq_cycle · ra · ( val + γ·(val + inc) )
 | 16 | full_vm 完整 zkVM 状态机 | combined |
 | 17 | full_vm_store 完整 zkVM+store(读-改-写循环) | combined |
 | 18 | full_vm_multi 多地址反复交替读写 | combined |
-| 19 | full_vm_jolt Jolt 风格指令执行(word 驱动·真实控制流) | combined |
+| 19 | full_vm_jolt Jolt 风格指令执行(word 驱动·单行约束·无跨行) | combined |
 
 ```
 binius64/                       ← 项目根（fork 工作目录）
-├── crates/zkvm-slice/          ← 15 切片权威代码（+ README, Cargo.toml）
+├── crates/zkvm-slice/          ← 19 切片权威代码（+ README, Cargo.toml）
 └── zkvm-project/
-    ├── README.md               ← 项目总览 + 15 切片速查表
+    ├── README.md               ← 项目总览 + 19 切片速查表
     ├── PROGRESS.md             ← 构建顺序 / 进展 / 下一步
     ├── architecture.md         ← 本文档（勘误后）
     ├── HANDOFF_M-A2.md

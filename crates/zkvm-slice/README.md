@@ -1,6 +1,12 @@
 # binius-zkvm-slice — Binius64 lookup 承载 zkVM 子问题的验证切片
 
-**日期**: 2026-09-01 → 2026-09-05 | **状态**: 14 个切片均 prove→verify 端到端通过（含 soundness 拒假）
+**日期**: 2026-09-01 → 2026-09-05 | **状态**: 19 个切片均 prove→verify 端到端通过（含 soundness 拒假）
+
+> ⚠️ **诚实勘误（2026-09-05 经逐行代码审查）**：这些切片验证的是**单机制可行**，
+> **不是**一个完整的 zkVM，**未实现**真正的内存论证（时序/排序）、**未实现**通用的
+> 跨行状态机（寄存器/PC 传递）。"读见最近写"多处为 **native 程序把正确值直接填进表**、
+> logup* 只证明一致性（claim∈表），**不证明时序（最近写）**。真实性与边界见下方各切片
+> 标注（⚠️=夸大/需修正，⭐=真正实现）。
 
 > 项目根见 `../../zkvm-project/`（设计文档、研究笔记、进度）。本 crate 是切片代码的
 > 权威所在（在 Binius64 workspace 内，用相对路径依赖其 crates，相对路径依赖已天然解决）。
@@ -158,63 +164,37 @@ store 写的值（read-after-write 一致性）：
 - 5 store + 2 load, T:32 单元(2^5), 闭环 + **拒过期值** ✓
 - 关键坑: `FieldBuffer` 表长度须为 **2 的幂** (ts_max*addr=32), 否则 panic。
 
-## 切片 16: `full_vm` — 完整 zkVM（三机制整合成一台状态机）★★★
-**工程整合核心成果**：一台状态机证明一个**含内存访问的循环程序**，三层机制在同一
-transcript 同时工作：
-- 程序: `loop { t=mem[i]; x1+=t; i++; pc+=4 }`（N=4 轮，data mem=[2,3,5,7]）
-- **Spartan 状态机**: x1=2+3+5+7=17(0x11), i 链 0..4, pc 链 0x0→0x10 —— 多轮进位加法器
-- **logup* 程序内存**: P[pc]=word 取指（multi_combined 已有）
-- **logup* 数据内存**: M[i]=value —— mem_arg 核心, 接到状态机的 load 输出
-- **接线点**: `mem_val[t]` 既是 Spartan 的 load 输出, 又是数据内存 looker claim
-- 512 mul, n_private=0(完全透明), 闭环 + **拒假**(load 读非内存值) ✓
-- = **第一台同时证明"循环+内存+整数加法"的二元域 zkVM**
+| ## 切片 16: `full_vm` — zkVM 演示（⚠️ 仅一次性演示，内存表手工构造）
+**⚠️ 诚实标注**：这是一个"把循环+内存+整数加法放进一个文件"的**演示**。它验证了循环加法、
+取指、内存查表能在**同一 transcript** 跑，但：
+- 执行语义**模板化**（硬编码 load/addi 路径，循环固定展开 N 轮）
+- **"读见最近写"由 native 程序直接把正确值填进表**，logup* 只证明 claim∈表（一致性），
+  **未证明时序（最近写）**
+- 512 mul, n_private=0, 闭环 + 拒假。**不是"第一台完整 zkVM"，而是演示**。
 
-## 切片 17: `full_vm_store` — 完整 zkVM + store 写内存（读-改-写循环）★★★
-**在 full_vm 基础上加 store 写内存**，跑一个**读-改-写(RAW)循环**：
-- 程序: `loop { t=mem[0]; x1+=t; mem[0]=x1; i++; pc+=4 }`（N=3, 初始 mem[0]=2）
-- loads:[2,2,4], stores:[2,4,8], x1:0→8（=2+2+4）
-- **Spartan 状态机**: load + addi(x1+=t) + store(x1) + incr + pc 多轮
-- **logup* 程序内存**: P[pc]=word 取指
-- **logup* 数据内存(时间排序表)**: T[ts*ADDR+addr], load 在 ts=2r, store 在 ts=2r+1
-- **"读见最近写"**: 第2轮 load 读 4(上轮 store 写的), 非初始 2 —— **读旧值→拒** ✓
-- 256 mul, n_private=0(透明), 闭环 + 拒假
-- = 第一台证明"load+store 读-改-写循环"的二元域 zkVM
+## 切片 17: `full_vm_store` — zkVM + store 演示（⚠️ 同上，读见最近写为手工构造）
+**⚠️ 诚实标注**：在 full_vm 上加 store（读-改-写循环），loads/stores 均为 run_program 算出
+（直接填值）。"读见最近写"未证时序，仅"X 时刻表里是这么填的"。256 mul, 闭环 + 拒假。
+**非"第一台证明读-改-写循环的 zkVM"**——是演示。
 
-## 切片 18: `full_vm_multi` — 完整 zkVM 多地址反复交替读写 ★★★
-**最强内存论证测试**：程序在两个地址交替读-改-写，每地址多次写，**读须见最近写**：
-- 程序: `loop { t=mem[i&1]; x1+=t; mem[i&1]=x1+1; i++; pc+=4 }`（N=4, mem[0]=1, mem[1]=5）
-- 地址 `i&1` 交替(0,1,0,1)；每地址写 2 次
-- loads:[1,5,2,7] stores:[2,7,9,16] x1:0→15(=1+5+2+7)
-- **读见最近写**: 轮2 load mem[0]=2(轮0写的,非初始1)；轮3 load mem[1]=7(轮1写的,非初始5)
-  —— **读初始值→拒** ✓
-- Spartan 状态机: load + addi + store(mem[i&1]=x1+1) + incr + pc；数据用时间排序表 T[ts*ADDR+addr],
-  load ts=2r, store ts=2r+1, addr=r&1
-- 512 mul, n_private=0(透明), 闭环 + 拒假
-- = 第一台证明"多地址反复交替读写"的二元域 zkVM
+## 切片 18: `full_vm_multi` — zkVM 多地址演示（⚠️ 同上）
+**⚠️ 诚实标注**：多地址交替读-改-写（两地址），loads:[1,5,2,7] stores:[2,7,9,16] 全是
+run_program 手工算出。"读见最近写"为手工构造，**未证时序**。512 mul, 闭环 + 拒假。
+**非"最强内存论证测试"**——只是演示，未真正论证。
 
-## 切片 19: `full_vm_jolt` — JOLT 风格指令执行（word 驱动 · opcode 解码分发）★★★
-**从"硬编码指令"转向"取回指令驱动执行"**（对齐 Jolt 的 CircuitFlags 思想）：
-- 程序: `addi x1,5@0x0; beq x1,==5→0x10@0x4; addi x1,1@0x10`（0x8 的 +100 被跳过）
-- **word 编码**: `(opcode<<6)|operand`; opcode 1=addi, 2=beq
-- **execute_cycle 解码 opcode 分发**: addi→x1+=operand 进位加; beq→eq 树(x1==LIMIT)+MUX 选 pc
-- **真实控制流**: beq 判定相等→跳 0x10, **跳过 0x8 的 addi +100**; x1 链 0x0→0x5→0x5→0x6
-  （若未跳过会=105）; pc 链 0x0→0x4→0x10→0x14 —— 分支真正影响 pc
-- logup* 程序内存 P[pc]=word（**分发词**, 非占位符）
-- **与 full_vm\* 的本质区别**: 执行语义由**取回的 word** 决定, 非硬编码 drive_round
-- 256 mul, n_private=0, 闭环 + **拒假**(取指词不在程序内存)
-- 诚实边界: 最小子集——仅 x1 活寄存器, limit 常量, 仅 addi/beq
+## 切片 19: `full_vm_jolt` — JOLT 风格 word 驱动指令执行（⭐ 真解码思想，⚠️ 无跨行）
+**⭐ 真正有价值的部分**：`execute_cycle` 解码取回 word 的 opcode 分发到 addi/beq（beq 用
+eq 树 + MUX 选 pc），这是**对的方向**。
+**⚠️ 但只是单行约束**：`match row.op` 是 native 固定的，**跨行寄存器/PC 传递未实现**，
+非"真实控制流状态机"。256 mul, 闭环 + 拒假。诚实边界：仅 x1，limit 常量，仅 addi/beq。
 
-## 整合 zkVM 主代码: `zkvm` — 项目主入口（架构转向）★★★
-**从切片实验转向整合状态机**。`crates/zkvm-slice/src/bin/zkvm.rs` 是**项目主代码**，
-一台状态机、同一 transcript，证明含全部机制的真实 RISC-V 程序：
-- **word 驱动解码** addi/add/lw/sw/beq（opcode→funct3 分发，非硬编码）
-- **多寄存器** x0..x6（由 word 的 rs1/rd 字段选择）
-- **ALU** addi(立即数)+add(寄存器) + **内存访问** lw/sw（读见最近写, 时间排序表）
-- **分支 beq** 真实控制流（x2==x5 退出循环）+ logup* 取指
-- 程序: 初始化 x1/x2/x5/x6 后循环4轮 {add x1,x1,x2; add x2,x2,x6; sw x1,0(x0);
-  lw x3,0(x0); beq x2,x5,end}；x1=0+1+2+3=6, mem[0]=6, x3=6(读见最近写)
-- 24 行 trace, n_mul=2048, n_private=0(透明), 闭环 + **拒假**(篡改取指词→拒)
-- **此后所有新功能在此递增，不再用切片。**
+## `zkvm`（zkvm.rs）— 逐行验证器（⚠️ 非"整合 zkVM 主代码"）
+**⚠️ 关键更正**：zkvm.rs **并非整合全部机制的 zkVM**，实为**逐行验证器 + 手工内存表**：
+- `drive_row` 里 **`let _ = pc;`**——PC 根本没被约束；
+- `row.op` 是 `run_program()` 里 **match 死的枚举**，**不是从 word 解码**；
+- `a`/`b` 为**独立注入值**，**无跨行寄存器传递**（上条 rd 不经寄存器堆流入下条 rs1）；
+- 内存表是 **native 手工填的** `tvec`，logup* 只证 claim∈表，**不证时序**。
+24 行 trace, n_mul=2048, n_private=0, 闭环 + 拒假。**不作为后续递增基线**。
 
 ## 运行
 ```bash
@@ -242,27 +222,26 @@ CARGO_BUILD_JOBS=4 cargo run -p binius-zkvm-slice --bin full_vm_jolt
 CARGO_BUILD_JOBS=4 cargo run -p binius-zkvm-slice --bin zkvm
 ```
 
-## 结论
-- Binius64 `logup_star` 是**通用 indexed lookup**（任意表 + 任意 index 列），
-  不是只用于 IMUL 的幂表。
-- 已实证它能承载 zkVM 的三个 lookup 子问题: 指令查表(片1) + 内存一致性(片2)。
-- 且 Binius64 内置 **Spartan prover** 能承载 R1CS glue:
-  + 寄存器流转 + PC 进位 + 单条指令闭环 + 多指令序列 + 条件分支 + 含循环阶乘(片3-8)
-  + **组合证明**(片9) + **多指令组合(查表取指+执行)**(片10) + **内存指令(store/load)**(片11)
-  + **内存论证(mem_arg, 子多重集合读⊆写)**(片12) + **带时间戳内存论证(mem_arg_ts,
-    同址多写·最近写判别)**(片13)。
-- 十三个切片(均含 soundness 拒假) = Jolt 架构在二元域上的**完整 zkVM 雏形**：
-  lookup 子系统(Lasso≡logup*) + 约束子系统(Spartan) 可在同一个 Fiat-Shamir
-  transcript 组合，**已能端到端证明含循环/乘法/内存访问/读写一致性的真实程序**。
-  其中 **mem_arg/mem_arg_ts 用 logup* 做多地址、多版本(带时间戳)的读-写一致性论证**
-  (store+load 全锁定同表、T 存最近写值) = zkVM 最难一环(内存论证)的机制落点。
+## 结论（诚实版）
+- Binius64 `logup_star` 是**通用 indexed lookup**（任意表 + 任意 index 列），不是只用于 IMUL 的幂表——**已实证**。
+- Binius64 内置 **Spartan prover** 能承载 R1CS glue：寄存器流转 + PC 进位 + 单条指令闭环 +
+  多指令序列 + 条件分支 + **含循环阶乘（factorial，⭐ 有真跨行状态迁移）**（切片 3-8）。
+- **组合证明**（切片 9/10）：logup* + Spartan 能在**同一个 Fiat-Shamir transcript** 串联。
+- **读⊆写 sub-multiset**（切片 12，⭐ 真内存论证雏形）：store+load 锁定同一表。
+- **⚠️ 严格边界**：**"读见最近写"的时序论证（排序/最近写）未实现**——切片 11/13/15/16-19
+  及 zkvm.rs 中，表格由 native 程序把正确值直接填进、logup* 只证明一致性（claim∈表），
+  **不证明时序**。亦**无通用的跨行寄存器/PC 状态机**（理想是像 factorial 那样，但目前
+  full_vm/zkvm 均未做到）。
+- **因此这些切片是"单机制可行"验证集，不是"完整 zkVM"，也不构成 Jolt 级内存论证。**
 
-## 下一步（从切片到真实 zkVM）
-1. 扩字宽到 RV32I(32-bit) 并覆盖更多指令(andi/slli), trace 用 isasim.rs。
-2. 把 `mem_arg_ts` 升为**完整 SPICE 排序论证(Twist&Shout)**: version 由 trace 内打
-   时间戳而非显式给出, 配排序器保证任意地址任意次"最近写"。
-3. 把 13 切片固化为可复用库(crate)，接上 CLI/测试套件，做 native-vs-proof 交叉核对基准。
-4. 决策：后端替换 Jolt vs 借鉴 Jolt 架构在 Binius64 内自建，**mem_arg_ts 已证明最近写判别**。
+## 下一步（真正需要做，而非已完成的）
+1. **真正的通用状态机**：跨行寄存器传递（上条 rd → 下条 rs1）+ PC 推进约束，这是"程序
+   执行"命门，目前**未实现**（factorial 是唯一有跨行迁移的例外）。
+2. **真正的内存论证**：把"读见最近写"的**时序**做成论证（排序/时序 sorter 或 Jolt 式
+   one-hot+increment），而非手工填表 + 一致性检查。
+3. **word 真正驱动解码**：opcode 位 → 决定执行路径，且与跨行状态机连接。
+4. 扩 RV32I 子集与字宽到 32-bit，trace 用 isasim.rs，跑更大程序。
+5. 固化库 + 测试套件：把真实机制（factorial 级跨行状态机）做成可复用 crate + 测试基准。
 
 ## 备注
 - crate 挂在 binius64 workspace 下（`crates/zkvm-slice`），复用其依赖链。
