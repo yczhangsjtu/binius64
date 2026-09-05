@@ -1,6 +1,6 @@
 # 二元域 zkVM 架构文档（Binius64 fork）
 
-> 版本: 2026-09-05 | 状态: 完整 zkVM 雏形（14 切片端到端验证）
+> 版本: 2026-09-05 | 状态: 完整 zkVM 雏形（15 切片端到端验证）
 > 定位: 本仓库（`github.com/yczhangsjtu/binius64`）作为项目工作目录的**权威架构图景**。
 > 它综合既有 plans（`designs/`）与研究成果（`research/`），并叠加当前**已实现 + 已实测**的证据链。
 
@@ -28,6 +28,11 @@
 ### 1.2 内置证明栈（关键：可直接承载 zkVM 子问题）
 - **`logup_star`**：通用 indexed lookup `(I*T)[i] = T[index[i]]`——任意表 + 任意 index 列，多表/多 looker 批处理。≈ Jolt 的 Lasso/Shout。
 - **`spartan-prover`/`frontend`/`verifier`**：完整 **Spartan**（uniform R1CS `MulConstraint{a,b,c}`）——≈ Jolt 的约束满足层。
+- **二元域 PCS = BaseFold（已自带，无需实现）**：`spartan-prover` 直接调用
+  `BaseFoldProverCompiler<P, ProverNTT<P::Scalar>>`；`logup*`/Spartan 均在
+  `OptimalB128`（GF(2^128)，底层 Ghash128b/Oblong）上运行。**所有切片端到端的
+  prove→verify 都经过了 BaseFold 二元域多线性 PCS**——它不是本项目的待办，而是
+  Binius64 开箱即用的底层。本节此前的"需自建 PCS"表述不准确，现予澄清。
 
 ### 1.3 环境（本机）
 - Rust **1.97.1**（`rustup toolchain install 1.97.1`；本机默认 1.95）。
@@ -52,7 +57,7 @@
 
 ---
 
-## 3. 已实现证据链：14 个切片（全部端到端 + soundness 拒假）
+## 3. 已实现证据链：15 个切片（全部端到端 + soundness 拒假）
 
 `crates/zkvm-slice/`。每个切片 = 最小 prove→verify + 一个"故意篡改被拒"的 soundness 测试。
 
@@ -72,11 +77,12 @@
 | 12 | `mem_arg` | **内存论证**（多地址读⊆写 sub-multiset，store+load 同锁一表） | logup* | 8 lookers |
 | 13 | `mem_arg_ts` | **带时间戳内存论证**（同址多写·最近写判别，两表拆分） | logup* | 3 store+2 load |
 | 14 | `jolt_bridge` | **Jolt 前端 trace → 二元域后端**（`JoltTraceRow` u64 契约直连） | logup* | 3 store+2 load |
+| 15 | `mem_arg_spice` | **完整 SPICE 排序内存论证**（任意次写·全局时间戳·时间排序状态表） | logup* | 5 store+2 load, 拒过期值 |
 
 ### 3.1 核心里程碑
 - **切片 8（阶乘）**：三要素（分支+多指令+整数乘法）合一，证明"成本 ∝ 指令数、与类型无关"在**含循环+乘法**的程序上成立。
 - **切片 9/10（组合）**：两个证明系统在**同一个 Fiat-Shamir transcript** 串联，logup* 的 γ 在 Spartan observe 公共输入**之后**采样 → 查表挑战依赖状态证明。
-- **切片 12/13（内存论证）**：zkVM **最难一环**。用 logup* 做**读⊆写子多重集合** + **最近写判别**（两表：写日志 W[(addr,ver)] + 读状态 T[addr]），避免 O(N·M) selectors 平方爆炸。
+- **切片 12/13/15（内存论证）**：zkVM **最难一环**。用 logup* 做**读⊆写子多重集合** + **最近写判别** + **完整 SPICE 排序**（任意次写·全局时间戳·时间排序状态表），避免 O(N·M) selectors 平方爆炸。
 - **切片 14（Jolt 桥接）**：后端替换的**接口层实锤**——Jolt 前端产出的 u64 trace 直接喂给二元域论证。
 
 ### 3.2 性能实测（release, i5-12400F）
@@ -118,8 +124,16 @@ output: eq_cycle · ra · ( val + γ·(val + inc) )
 **诚实结论**：
 - **Jolt 的 memory-checking 不是全局排序器**，而是 **one-hot + increment**，天然二元友好。
 - 它与我们的二元域 logup* 内存论证**证明同一命题**（load 读到的值 == 该地址最近一次 store 的值）。
-- **后端替换真正困难点 = 域切换**（Jolt 全程 BN254 素域 + Dory PCS → 需将 sumcheck/PCS/multiset 重写为 char-2），**而非内存论证机制**（已对口）。
+- **后端替换不需"实现二元域 PCS"**：Binius64 自带 BaseFold 二元域多线性 PCS，所有切片
+  都直接在它上面跑。真正要做的不是"造 PCS/重写 sumcheck 到 char-2"（PCS 与 sumcheck 都是
+  Binius64 现成的），而是**把 Jolt 的 sumcheck 关系式语义**（one-hot+increment）映射到
+  Binius64 已有的 logup*/spartan 结构上——这已由切片 12/13/14/15 实证过。
 - **前端可复用**：Jolt 的 `tracer`/`Cycle`/`RAMAccess`/`JoltTraceRow` 全是**域无关 u64**，可直接复用。
+
+> **勘误**：本节此前（及旧版路线图）把"域切换攻坚/实现二元域 PCS"列为最大工程，**这是不准确的**。
+> 二元域 PCS 由 BaseFold 自带、sumcheck 由 Binius64 自带，二者都无需自建。经用户指正核实
+> （spartan-prover 直接调 `BaseFoldProverCompiler`，logup* 在 `OptimalB128` 上运行），
+> 已更正为：**不需要域切换，真正的工作是工程整合**（见 §6）。
 
 ---
 
@@ -136,10 +150,16 @@ output: eq_cycle · ra · ( val + γ·(val + inc) )
 
 ## 6. 下一步路线图
 
-1. **扩 RV32I 子集与字宽到 32-bit**（andi/slli/...），trace 用 isasim.rs，跑更大程序。
-2. **内存论证升级**：从"version 显式"到**完整 SPICE 排序论证（带时间戳）**，处理任意次"最近写"。
-3. **域切换攻坚**：评估 Binius64 PCS 能否承载 Jolt 的 sumcheck 关系式（最大工程）。
-4. **固化库 + 测试套件**：把 14 切片做成可复用 crate + native-vs-proof 交叉核对基准。
+> **勘误**：旧版把"域切换攻坚（Jolt sumcheck → 二元域 PCS）"列为最大工程——**这是错误的**。
+> 二元域 PCS = BaseFold（Binius64 自带），sumcheck 也由 Binius64 自带，二者都**无需自建**。
+> 前后端是同一栈（logup*/spartan 都在 BaseFold 上）。真正的工作是**工程整合**，不是域切换。
+
+1. **整合成完整 zkVM**：把 15 切片的机制（lookup + 约束 + 组合证明 + 内存论证）接入
+   同一套状态机，跑完整真实程序 —— 这是下一步核心。
+2. **扩 RV32I 子集与字宽到 32-bit**（andi/slli/...），trace 用 isasim.rs，跑更大程序。
+3. **内存论证接入状态机**：把 mem_arg_spice 接到 PC/寄存器状态机，证明"执行含内存访问的
+   完整程序 trace 一致性"。
+4. **固化库 + 测试套件**：把 15 切片做成可复用 crate + native-vs-proof 交叉核对基准。
 
 ---
 
@@ -155,13 +175,24 @@ output: eq_cycle · ra · ( val + γ·(val + inc) )
 
 ## 8. 文件索引
 
+| 切片 | 机制 | 证明系统 |
+|---|---|---|
+| 1 `inst_lookup` | 指令查表 | logup* |
+| 2 `mem_lookup` | 内存一致性查表 | logup* |
+| 3-8 | PC 进位/单指令/多指令/分支/阶乘 | Spartan |
+| 9-10 | 组合证明/多指令组合 | combined |
+| 11 | 内存 store/load | Spartan |
+| 12-13 | 读⊆写/最近写判别 | logup* |
+| 14 | Jolt 前端桥接 | logup* |
+| 15 | 完整 SPICE 排序内存论证 | logup* |
+
 ```
 binius64/                       ← 项目根（fork 工作目录）
-├── crates/zkvm-slice/          ← 14 切片权威代码（+ README, Cargo.toml）
+├── crates/zkvm-slice/          ← 15 切片权威代码（+ README, Cargo.toml）
 └── zkvm-project/
-    ├── README.md               ← 项目总览 + 14 切片速查表
+    ├── README.md               ← 项目总览 + 15 切片速查表
     ├── PROGRESS.md             ← 构建顺序 / 进展 / 下一步
-    ├── architecture.md         ← 本文档
+    ├── architecture.md         ← 本文档（勘误后）
     ├── HANDOFF_M-A2.md
     ├── designs/                ← 计划/决策（baseline-zkvm-design, constraint-proofs-and-zkvm-plan, ...）
     └── research/               ← 研究（jolt-binius-memory-argument-mapping, zkvm-backend-replacement-feasibility, ...）
