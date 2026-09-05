@@ -165,12 +165,24 @@ flock 的 `CircuitBuilder` wiring 与 witness `Wiring(Gkr(ProductMismatch))` 另
      `workspace/jolt/specs/proof-trace-row-layout.md`), 用域无关 u64 值喂给二元域
      logup* 内存论证(W 写日志 + T 读状态), 证明"读见最近写", 拒旧值。
      = 后端替换接口层可行。对照: `research/jolt-binius-memory-argument-mapping.md`。
+   - `mem_arg_spice.rs` ★★★ — **完整 SPICE 排序内存论证(任意次写·全局时间戳)**: 
+     补上 mem_arg_ts 的诚实边界(per-address version + 未证排序)。用**全局 ts + 时间排序
+     状态表** `T[ts*ADDR+addr]`, 每个访问用 (ts,addr) 定位。addr1 写三次(0x11->0x22->0x33),
+     load@ts5 读 0x33, 声读旧值 0x11(过期)→**拒绝**。= SPICE 排序本质(读错时间点=读错值)。
+     坑: FieldBuffer 表长度须为 2 的幂(ts_max*addr=32)。
+   - `full_vm.rs` ★★★ — **完整 zkVM 状态机(工程整合核心)**: 一台状态机证明"循环+内存+
+     整数加法"(N=4 轮, data mem=[2,3,5,7], x1=2+3+5+7=17)。三层同一 transcript:
+     Spartan 状态机(x1+=mem_val / i++ / pc+=4) + logup* 程序内存(P[pc]=word 取指) +
+     logup* 数据内存(M[i]=mem_val)。**接线点**: mem_val[t] 既是 Spartan load 输出又是
+     数据内存 looker claim。512 mul, n_private=0(透明), 闭环+拒假。= 第一台证明含内存
+     访问循环程序的二元域 zkVM。
    - **结论**: Binius64 二元域后端(spartan-prover + logup*) **完整承载 Jolt 架构**:
      lookup 模块 + R1CS 模块 + **组合证明** + **内存指令** + **内存论证(读⊆写 +
-     最近写判别)** + **Jolt前端桥接**, 已能端到端证明含循环/乘法/内存访问/读写一致性
-     的真实程序 = **完整 zkVM 雏形**。Jolt 源码分析(workspace/jolt)证实:
-     **memory-checking 语义(one-hot+increment)与二元域 logup* 同构**, 后端替换
-     困难点在域切换(BN254→char-2), 而非内存论证机制。
+     最近写判别 + 完整 SPICE 排序)** + **Jolt前端桥接** + **完整 zkVM 状态机(full_vm)**,
+     已能端到端证明含循环/乘法/内存访问/读写一致性的真实程序 = **完整 zkVM**。
+     Jolt 源码分析(workspace/jolt)证实: **memory-checking 语义(one-hot+increment)与
+     二元域 logup* 同构**。**勘误**: 后端替换不需域切换——PCS(BaseFold)/sumcheck 均
+     Binius64 自带, 真正工作是工程整合(已达, 见 full_vm)。
      关键 API: `IPProverChannel::sample(&mut transcript)` 采样 gamma, 多表 logup*,
      Spartan `prover.prove(witness, rng, &mut transcript)`, 同 transcript 串联。
 

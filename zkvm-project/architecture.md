@@ -1,6 +1,6 @@
 # 二元域 zkVM 架构文档（Binius64 fork）
 
-> 版本: 2026-09-05 | 状态: 完整 zkVM 雏形（15 切片端到端验证）
+> 版本: 2026-09-05 | 状态: 完整 zkVM 雏形（16 切片端到端验证，含完整 zkVM 状态机）
 > 定位: 本仓库（`github.com/yczhangsjtu/binius64`）作为项目工作目录的**权威架构图景**。
 > 它综合既有 plans（`designs/`）与研究成果（`research/`），并叠加当前**已实现 + 已实测**的证据链。
 
@@ -78,12 +78,16 @@
 | 13 | `mem_arg_ts` | **带时间戳内存论证**（同址多写·最近写判别，两表拆分） | logup* | 3 store+2 load |
 | 14 | `jolt_bridge` | **Jolt 前端 trace → 二元域后端**（`JoltTraceRow` u64 契约直连） | logup* | 3 store+2 load |
 | 15 | `mem_arg_spice` | **完整 SPICE 排序内存论证**（任意次写·全局时间戳·时间排序状态表） | logup* | 5 store+2 load, 拒过期值 |
+| 16 | `full_vm` | **完整 zkVM 状态机**（三机制整合：循环+内存+整数加法，同一 transcript） | combined | 512 mul, n_private=0 |
 
 ### 3.1 核心里程碑
 - **切片 8（阶乘）**：三要素（分支+多指令+整数乘法）合一，证明"成本 ∝ 指令数、与类型无关"在**含循环+乘法**的程序上成立。
 - **切片 9/10（组合）**：两个证明系统在**同一个 Fiat-Shamir transcript** 串联，logup* 的 γ 在 Spartan observe 公共输入**之后**采样 → 查表挑战依赖状态证明。
 - **切片 12/13/15（内存论证）**：zkVM **最难一环**。用 logup* 做**读⊆写子多重集合** + **最近写判别** + **完整 SPICE 排序**（任意次写·全局时间戳·时间排序状态表），避免 O(N·M) selectors 平方爆炸。
 - **切片 14（Jolt 桥接）**：后端替换的**接口层实锤**——Jolt 前端产出的 u64 trace 直接喂给二元域论证。
+- **切片 16（full_vm）**：**工程整合达成**——一台状态机同时证明"循环+内存+整数加法"
+  （Spartan 状态机 + logup* 程序内存取指 + logup* 数据内存论证，同一 transcript，
+  512 mul，n_private=0）。= 第一台证明含内存访问循环程序的二元域 zkVM。
 
 ### 3.2 性能实测（release, i5-12400F）
 | 切片 | mul 约束 | prove | verify |
@@ -154,12 +158,13 @@ output: eq_cycle · ra · ( val + γ·(val + inc) )
 > 二元域 PCS = BaseFold（Binius64 自带），sumcheck 也由 Binius64 自带，二者都**无需自建**。
 > 前后端是同一栈（logup*/spartan 都在 BaseFold 上）。真正的工作是**工程整合**，不是域切换。
 
-1. **整合成完整 zkVM**：把 15 切片的机制（lookup + 约束 + 组合证明 + 内存论证）接入
-   同一套状态机，跑完整真实程序 —— 这是下一步核心。
-2. **扩 RV32I 子集与字宽到 32-bit**（andi/slli/...），trace 用 isasim.rs，跑更大程序。
-3. **内存论证接入状态机**：把 mem_arg_spice 接到 PC/寄存器状态机，证明"执行含内存访问的
-   完整程序 trace 一致性"。
-4. **固化库 + 测试套件**：把 15 切片做成可复用 crate + native-vs-proof 交叉核对基准。
+> **整合状态**：工程整合已完成（切片 16 `full_vm`）——一台状态机同时证明"循环+内存+
+> 整数加法"。以下仍为后续可扩展方向。
+
+1. **扩 RV32I 子集与字宽到 32-bit**（andi/slli/...），trace 用 isasim.rs，跑更大程序。
+2. **指令解码泛化**：full_vm 目前硬编码 opcode（load/addi 语义），泛化到任意 RV32I 指令。
+3. **循环边界变量化**：full_vm 展开固定轮数，改为循环边界由 trace 决定。
+4. **固化库 + 测试套件**：把 16 切片做成可复用 crate + native-vs-proof 交叉核对基准。
 
 ---
 
@@ -185,6 +190,7 @@ output: eq_cycle · ra · ( val + γ·(val + inc) )
 | 12-13 | 读⊆写/最近写判别 | logup* |
 | 14 | Jolt 前端桥接 | logup* |
 | 15 | 完整 SPICE 排序内存论证 | logup* |
+| 16 | full_vm 完整 zkVM 状态机 | combined |
 
 ```
 binius64/                       ← 项目根（fork 工作目录）

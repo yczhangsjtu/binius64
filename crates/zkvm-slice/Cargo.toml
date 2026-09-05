@@ -80,3 +80,7 @@ path = "src/bin/jolt_bridge.rs"
 [[bin]]
 name = "mem_arg_spice"
 path = "src/bin/mem_arg_spice.rs"
+
+[[bin]]
+name = "full_vm"
+path = "src/bin/full_vm.rs"

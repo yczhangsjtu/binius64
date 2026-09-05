@@ -158,6 +158,17 @@ store 写的值（read-after-write 一致性）：
 - 5 store + 2 load, T:32 单元(2^5), 闭环 + **拒过期值** ✓
 - 关键坑: `FieldBuffer` 表长度须为 **2 的幂** (ts_max*addr=32), 否则 panic。
 
+## 切片 16: `full_vm` — 完整 zkVM（三机制整合成一台状态机）★★★
+**工程整合核心成果**：一台状态机证明一个**含内存访问的循环程序**，三层机制在同一
+transcript 同时工作：
+- 程序: `loop { t=mem[i]; x1+=t; i++; pc+=4 }`（N=4 轮，data mem=[2,3,5,7]）
+- **Spartan 状态机**: x1=2+3+5+7=17(0x11), i 链 0..4, pc 链 0x0→0x10 —— 多轮进位加法器
+- **logup* 程序内存**: P[pc]=word 取指（multi_combined 已有）
+- **logup* 数据内存**: M[i]=value —— mem_arg 核心, 接到状态机的 load 输出
+- **接线点**: `mem_val[t]` 既是 Spartan 的 load 输出, 又是数据内存 looker claim
+- 512 mul, n_private=0(完全透明), 闭环 + **拒假**(load 读非内存值) ✓
+- = **第一台同时证明"循环+内存+整数加法"的二元域 zkVM**
+
 ## 运行
 ```bash
 cd /home/yczhang/workspace/binius64
@@ -177,6 +188,7 @@ CARGO_BUILD_JOBS=4 cargo run -p binius-zkvm-slice --bin mem_arg
 CARGO_BUILD_JOBS=4 cargo run -p binius-zkvm-slice --bin mem_arg_ts
 CARGO_BUILD_JOBS=4 cargo run -p binius-zkvm-slice --bin jolt_bridge
 CARGO_BUILD_JOBS=4 cargo run -p binius-zkvm-slice --bin mem_arg_spice
+CARGO_BUILD_JOBS=4 cargo run -p binius-zkvm-slice --bin full_vm
 ```
 
 ## 结论
