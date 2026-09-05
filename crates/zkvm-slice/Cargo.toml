@@ -76,3 +76,7 @@ path = "src/bin/mem_arg_ts.rs"
 [[bin]]
 name = "jolt_bridge"
 path = "src/bin/jolt_bridge.rs"
+
+[[bin]]
+name = "mem_arg_spice"
+path = "src/bin/mem_arg_spice.rs"

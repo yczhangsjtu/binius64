@@ -147,6 +147,17 @@ store 写的值（read-after-write 一致性）：
 - **= 后端替换直接可行证据**：Jolt 前端 trace(u64) 无缝接 Binius64 二元域论证。
 - 对照详见 `~/workspace/binaryfield-zkvm/research/jolt-binius-memory-argument-mapping.md`。
 
+## 切片 15: `mem_arg_spice` — 完整 SPICE 排序内存论证（任意次写 · 全局时间戳）★★★
+**内存论证最终形态**：`mem_arg_ts` 用 per-address version（未证排序）；本切片用
+**全局时间戳 `ts` + 时间排序状态表** `T[ts*ADDR+addr]`，证明任意次"最近写"：
+- **任意次数写**：addr1 写三次(0x11->0x22->0x33)，不用固定每地址次数
+- **时间排序表**：每个访问用 (ts,addr) 精确定位 T 中对应时间点/地址单元的值
+- **读错时间点=读错值=拒**：load@ts5 必须读 0x33(该时刻 addr1 的最值)，声称读旧值
+  0x11(ts=0 的过期值) → **拒绝** ✓
+- **= SPICE 排序论证本质**：读写绑定到同一 (timestamp,address) 单元，排序由表的结构承担。
+- 5 store + 2 load, T:32 单元(2^5), 闭环 + **拒过期值** ✓
+- 关键坑: `FieldBuffer` 表长度须为 **2 的幂** (ts_max*addr=32), 否则 panic。
+
 ## 运行
 ```bash
 cd /home/yczhang/workspace/binius64
@@ -165,6 +176,7 @@ CARGO_BUILD_JOBS=4 cargo run -p binius-zkvm-slice --bin mem_instr
 CARGO_BUILD_JOBS=4 cargo run -p binius-zkvm-slice --bin mem_arg
 CARGO_BUILD_JOBS=4 cargo run -p binius-zkvm-slice --bin mem_arg_ts
 CARGO_BUILD_JOBS=4 cargo run -p binius-zkvm-slice --bin jolt_bridge
+CARGO_BUILD_JOBS=4 cargo run -p binius-zkvm-slice --bin mem_arg_spice
 ```
 
 ## 结论
