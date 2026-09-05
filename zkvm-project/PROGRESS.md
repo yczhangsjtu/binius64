@@ -187,6 +187,12 @@ flock 的 `CircuitBuilder` wiring 与 witness `Wiring(Gkr(ProductMismatch))` 另
      stores:[2,7,9,16] x1:0→15。**读见最近写**: 轮2 load mem[0]=2(轮0写的,非初始1),
      轮3 load mem[1]=7(轮1写的,非初始5) → 读初始值拒。512 mul, n_private=0。= 第一台证明
      多地址反复交替读写的二元域 zkVM。
+   - `full_vm_jolt.rs` ★★★ — **JOLT 风格指令执行(word 驱动·opcode 解码分发)**: 从
+     硬编码转向 word 驱动。word 编码 `(opcode<<6)|operand`(1=addi,2=beq)。execute_cycle
+     解码取回 word 的 opcode 分发: addi→x1+=operand; beq→eq 树(x1==LIMIT)+MUX 选 pc。
+     真实控制流: beq 相等→跳 0x10, 跳过 0x8 的 addi+100(x1=6 而非 105), pc 链
+     0x0→0x4→0x10→0x14。logup* 程序内存 P[pc]=word(分发词)。256 mul, n_private=0, 拒假。
+     诚实边界: 仅 x1 活寄存器/limit 常量/仅 addi+beq。= 对齐 Jolt CircuitFlags 第一步。
    - **结论**: Binius64 二元域后端(spartan-prover + logup*) **完整承载 Jolt 架构**:
      lookup 模块 + R1CS 模块 + **组合证明** + **内存指令** + **内存论证(读⊆写 +
      最近写判别 + 完整 SPICE 排序)** + **Jolt前端桥接** + **完整 zkVM 状态机(full_vm)**,

@@ -1,6 +1,6 @@
 # 二元域 zkVM 架构文档（Binius64 fork）
 
-> 版本: 2026-09-05 | 状态: 完整 zkVM 雏形（18 切片端到端验证，含多地址交替读写）
+> 版本: 2026-09-05 | 状态: 完整 zkVM 雏形（19 切片端到端验证，含 Jolt 风格 word 驱动执行）
 > 定位: 本仓库（`github.com/yczhangsjtu/binius64`）作为项目工作目录的**权威架构图景**。
 > 它综合既有 plans（`designs/`）与研究成果（`research/`），并叠加当前**已实现 + 已实测**的证据链。
 
@@ -81,6 +81,7 @@
 | 16 | `full_vm` | **完整 zkVM 状态机**（三机制整合：循环+内存+整数加法，同一 transcript） | combined | 512 mul, n_private=0 |
 | 17 | `full_vm_store` | **zkVM + store 写内存**（读-改-写循环，读见最近写） | combined | 256 mul, n_private=0 |
 | 18 | `full_vm_multi` | **zkVM 多地址反复交替读写**（读见最近写） | combined | 512 mul, n_private=0 |
+| 19 | `full_vm_jolt` | **JOLT 风格指令执行**（word 驱动·opcode 解码分发·真实控制流） | combined | 256 mul, n_private=0 |
 
 ### 3.1 核心里程碑
 - **切片 8（阶乘）**：三要素（分支+多指令+整数乘法）合一，证明"成本 ∝ 指令数、与类型无关"在**含循环+乘法**的程序上成立。
@@ -95,6 +96,9 @@
 - **切片 18（full_vm_multi）**：**多地址反复交替读写**——两地址(addr=i&1)交替读-改-写，
   每地址多次写（地址0:轮0/2写，地址1:轮1/3写），load 读最近写（轮2读2非初始1；轮3读7非初始5），
   读初始值→拒，512 mul。= 最强内存论证测试（读见最近写 across 多地址）。
+- **切片 19（full_vm_jolt）**：**Jolt 风格指令执行**——从硬编码转向 word 驱动：execute_cycle
+  解码取回 word 的 opcode 分发到 addi/beq；beq 真实控制流（eq 树 + MUX），跳过 0x8 的 +100
+  （x1=6 而非 105），pc 链 0x0→0x4→0x10→0x14。= 对齐 Jolt CircuitFlags 思想的第一步。
 
 ### 3.2 性能实测（release, i5-12400F）
 | 切片 | mul 约束 | prove | verify |
@@ -200,6 +204,7 @@ output: eq_cycle · ra · ( val + γ·(val + inc) )
 | 16 | full_vm 完整 zkVM 状态机 | combined |
 | 17 | full_vm_store 完整 zkVM+store(读-改-写循环) | combined |
 | 18 | full_vm_multi 多地址反复交替读写 | combined |
+| 19 | full_vm_jolt Jolt 风格指令执行(word 驱动·真实控制流) | combined |
 
 ```
 binius64/                       ← 项目根（fork 工作目录）

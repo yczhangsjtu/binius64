@@ -192,6 +192,18 @@ transcript 同时工作：
 - 512 mul, n_private=0(透明), 闭环 + 拒假
 - = 第一台证明"多地址反复交替读写"的二元域 zkVM
 
+## 切片 19: `full_vm_jolt` — JOLT 风格指令执行（word 驱动 · opcode 解码分发）★★★
+**从"硬编码指令"转向"取回指令驱动执行"**（对齐 Jolt 的 CircuitFlags 思想）：
+- 程序: `addi x1,5@0x0; beq x1,==5→0x10@0x4; addi x1,1@0x10`（0x8 的 +100 被跳过）
+- **word 编码**: `(opcode<<6)|operand`; opcode 1=addi, 2=beq
+- **execute_cycle 解码 opcode 分发**: addi→x1+=operand 进位加; beq→eq 树(x1==LIMIT)+MUX 选 pc
+- **真实控制流**: beq 判定相等→跳 0x10, **跳过 0x8 的 addi +100**; x1 链 0x0→0x5→0x5→0x6
+  （若未跳过会=105）; pc 链 0x0→0x4→0x10→0x14 —— 分支真正影响 pc
+- logup* 程序内存 P[pc]=word（**分发词**, 非占位符）
+- **与 full_vm\* 的本质区别**: 执行语义由**取回的 word** 决定, 非硬编码 drive_round
+- 256 mul, n_private=0, 闭环 + **拒假**(取指词不在程序内存)
+- 诚实边界: 最小子集——仅 x1 活寄存器, limit 常量, 仅 addi/beq
+
 ## 运行
 ```bash
 cd /home/yczhang/workspace/binius64
@@ -214,6 +226,7 @@ CARGO_BUILD_JOBS=4 cargo run -p binius-zkvm-slice --bin mem_arg_spice
 CARGO_BUILD_JOBS=4 cargo run -p binius-zkvm-slice --bin full_vm
 CARGO_BUILD_JOBS=4 cargo run -p binius-zkvm-slice --bin full_vm_store
 CARGO_BUILD_JOBS=4 cargo run -p binius-zkvm-slice --bin full_vm_multi
+CARGO_BUILD_JOBS=4 cargo run -p binius-zkvm-slice --bin full_vm_jolt
 ```
 
 ## 结论

@@ -92,3 +92,7 @@ path = "src/bin/full_vm_store.rs"
 [[bin]]
 name = "full_vm_multi"
 path = "src/bin/full_vm_multi.rs"
+
+[[bin]]
+name = "full_vm_jolt"
+path = "src/bin/full_vm_jolt.rs"
