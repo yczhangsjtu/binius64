@@ -20,6 +20,17 @@
 ## M-A2（进行中，2026-09-01，**历史遗留**——方向已转向 Binius64，本节代码在现仓库不存在）：指令门 R1CS + Ligerito prove/verify
 
 
+### 里程碑 M1：寄存器读-写矩阵（reg_rw）⭐ 真正实现（2026-09-06）
+- `crates/zkvm-slice/src/slices/reg_rw.rs` — **第一个朝 Jolt 风格 zkVM 迈进的真实步骤**：
+  用 logup* 做**寄存器读-写矩阵**（"读见最近写"），多寄存器、可寻址、读-写一致。
+- 模型：**时间排序寄存器状态表** `T[ts*NREG+reg]`（对齐 mem_arg_spice，但表是寄存器文件）。
+  写(store)=更新寄存器当前值；读(load)=看该 ts 时刻寄存器值。logup* 证明读写一致。
+- 程序：`addi x1,5; addi x2,3; add x1,x1,x2; addi x2,7; add x1,x1,x2; addi x5,x1,1`
+  → x1=15, x2=7, x5=16。读见最近写：`add x1,x1,x2`(第2次)读 x1=8(非5)、x2=7。
+- soundness：篡改读 x1=5(过期) → 被拒 ✓。
+- 运行：`cargo test -p binius-zkvm-slice --lib reg_rw`
+- **替代了 zkvm.rs 的"a/b 独立注入值"问题**：这里读值通过寄存器表强制 == 最近写值。
+
 ### `zkvm.rs` 的真实状态（⚠️ 经逐行审查，非"整合主代码"）
 - `crates/zkvm-slice/src/slices/zkvm.rs` — **非"项目主代码"**，实为**逐行验证器 + 手工内存表**：
   `drive_row` 里 **`let _ = pc;`（PC 未约束）**；`row.op` 是 `run_program()` 里 **match 死的

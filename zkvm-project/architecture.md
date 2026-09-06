@@ -83,7 +83,7 @@
 > 但证明的强度**低于切片 8（factorial）**——后者才有真正的跨行状态迁移。`zkvm.rs` 不作为
 > 后续递增基线，仅作为"把多块小机制塞进一个文件"的一次性演示。
 
-## 3. 已实现证据链：20 个切片（全部端到端 + soundness 拒假）
+## 3. 已实现证据链：21 个机制（全部端到端 + soundness 拒假）
 
 `crates/zkvm-slice/`。每个切片 = 最小 prove→verify + 一个"故意篡改被拒"的 soundness 测试。
 
@@ -109,6 +109,7 @@
 | 18 | `full_vm_multi` | zkVM 多地址反复交替读写（⚠️ **有跨行**；"读见最近写"为手工构造，非论证） | combined | 512 mul, n_private=0 |
 | 19 | `full_vm_jolt` | JOLT 风格指令执行（⭐ **真实 word 位解码** `word[7:6]`→is_addi/is_beq + **真实跨行 x1/pc `[c+1]`**；⚠️ 局限：单累加器 x1、无常驻寄存器堆、仅 addi+beq、limit 常量、无内存操作） | combined | 256 mul, n_private=0 |
 | 20 | `zkvm` | 逐行验证器（⚠️ **无跨行**——`let _ = pc`（PC 未约束）、`row.op` 为 native 枚举、内存表 native 填） | combined | 2048 mul, n_private=0 |
+| 21 | `reg_rw` | **寄存器读-写矩阵**（⭐ 真：时间排序寄存器表 `T[ts*NREG+reg]`，读见最近写，多寄存器可寻址） | logup* | 11 事件, 拒过期读值 |
 
 ### 3.1 核心里程碑（诚实分级）
 - **切片 8（阶乘）⭐ 真正实现**：三要素（分支+多指令+整数乘法）合一，且有**跨行状态迁移**，

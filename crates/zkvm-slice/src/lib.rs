@@ -59,6 +59,8 @@ mod full_vm_multi;
 mod full_vm_jolt;
 #[path = "slices/zkvm.rs"]
 mod zkvm;
+#[path = "slices/reg_rw.rs"]
+mod reg_rw;
 
 // Re-export the run functions so integration (or future bins) can call them.
 pub use inst_lookup::run_inst_lookup;
