@@ -7,7 +7,7 @@
 
 二进制域 zkVM：项目方向已从 flock 转向 Binius64。见下方分节。
 
-## M-A1（完成，2026-08-31）：native RISC-V 参考 + trace 采集 ✓
+## M-A1（完成，2026-08-31，**历史遗留**）：native RISC-V 参考 + trace 采集 ✓
 
 - `src/isasim.rs`：最小 RV32I 解释器（解码/编码/执行/trace），含自训语义。
 - `src/main.rs --release`：11 条指令 demo（LUI ADDI ADD SUB AND ORI XORI SLLI SRLI SRAI）
@@ -17,11 +17,11 @@
   - SRA 是 R-type（移位量取 rs2 寄存器），立即数右移必须用 I-type 的 SRAI。
   - 移位 shamt 放 `imm[4:0]`、funct7 为 0/0x20；首版编码放错进 funct7 区导致 SRLI 被误判 ADDI。
 
-## M-A2（进行中，2026-09-01）：指令门 R1CS + Ligerito prove/verify
+## M-A2（进行中，2026-09-01，**历史遗留**——方向已转向 Binius64，本节代码在现仓库不存在）：指令门 R1CS + Ligerito prove/verify
 
 
 ### `zkvm.rs` 的真实状态（⚠️ 经逐行审查，非"整合主代码"）
-- `crates/zkvm-slice/src/bin/zkvm.rs` — **非"项目主代码"**，实为**逐行验证器 + 手工内存表**：
+- `crates/zkvm-slice/src/slices/zkvm.rs` — **非"项目主代码"**，实为**逐行验证器 + 手工内存表**：
   `drive_row` 里 **`let _ = pc;`（PC 未约束）**；`row.op` 是 `run_program()` 里 **match 死的
   枚举（非 word 解码）**；`a`/`b` 为**独立注入值（无跨行寄存器传递）**；内存表 **native 手工填**
   （logup* 只证 claim∈表，**不证时序/最近写**）。24 行 trace, n_mul=2048, n_private=0,
@@ -199,7 +199,7 @@ flock 的 `CircuitBuilder` wiring 与 witness `Wiring(Gkr(ProductMismatch))` 另
      stores:[2,7,9,16] x1:0→15。**读见最近写**: 轮2 load mem[0]=2(轮0写的,非初始1),
      轮3 load mem[1]=7(轮1写的,非初始5) → 读初始值拒。512 mul, n_private=0。= ⚠️演示
      多地址反复交替读写的二元域 zkVM。
-   - `full_vm_jolt.rs` ⭐ — **JOLT 风格指令执行(word 驱动 opcode 解码, ⚠️单行约束无跨行)**: 从
+   - `full_vm_jolt.rs` ⭐ — **JOLT 风格指令执行(word 位解码 + 真实跨行 x1/pc, ⚠️单累加器·仅addi+beq)**: 从
      硬编码转向 word 驱动。word 编码 `(opcode<<6)|operand`(1=addi,2=beq)。execute_cycle
      解码取回 word 的 opcode 分发: addi→x1+=operand; beq→eq 树(x1==LIMIT)+MUX 选 pc。
      真实控制流: beq 相等→跳 0x10, 跳过 0x8 的 addi+100(x1=6 而非 105), pc 链
@@ -227,4 +227,4 @@ flock 的 `CircuitBuilder` wiring 与 witness `Wiring(Gkr(ProductMismatch))` 另
 - `designs/binius64-baseline-decision.md`
 - `designs/binius64-constraint-proofs-and-zkvm-plan.md`
 - `designs/binius64-frontend-api-map.md`
-- `../binius64/crates/zkvm-slice/{README.md, src/bin/inst_lookup.rs, src/bin/mem_lookup.rs, src/bin/pc_glue.rs, src/bin/pc_carry.rs, src/bin/instr_step.rs, src/bin/multi_inst.rs, src/bin/branch.rs, src/bin/factorial.rs, src/bin/combined.rs, src/bin/multi_combined.rs, src/bin/mem_instr.rs}`
+- `../binius64/crates/zkvm-slice/{README.md, src/slices/inst_lookup.rs, src/slices/mem_lookup.rs, src/slices/pc_glue.rs, src/slices/pc_carry.rs, src/slices/instr_step.rs, src/slices/multi_inst.rs, src/slices/branch.rs, src/slices/factorial.rs, src/slices/combined.rs, src/slices/multi_combined.rs, src/slices/mem_instr.rs}`

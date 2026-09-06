@@ -83,7 +83,7 @@
 > 但证明的强度**低于切片 8（factorial）**——后者才有真正的跨行状态迁移。`zkvm.rs` 不作为
 > 后续递增基线，仅作为"把多块小机制塞进一个文件"的一次性演示。
 
-## 3. 已实现证据链：19 个切片（全部端到端 + soundness 拒假）
+## 3. 已实现证据链：20 个切片（全部端到端 + soundness 拒假）
 
 `crates/zkvm-slice/`。每个切片 = 最小 prove→verify + 一个"故意篡改被拒"的 soundness 测试。
 
@@ -104,10 +104,11 @@
 | 13 | `mem_arg_ts` | 带时间戳内存论证（⚠️ 表由 trace 手工构造，seq 未证；version 显式给出） | logup* | 3 store+2 load |
 | 14 | `jolt_bridge` | **Jolt 前端 trace → 二元域后端**（`JoltTraceRow` u64 契约直连） | logup* | 3 store+2 load |
 | 15 | `mem_arg_spice` | SPICE 排序内存论证（⚠️ **表 native 手工构造**，仅证"value ∈ T[ts,addr]"，**未实现 sorter/时序论证**） | logup* | 5 store+2 load, 拒过期值 |
-| 16 | `full_vm` | 完整 zkVM 状态机（⚠️ 内核：循环+内存+整数加法，**但内存表手工构造**） | combined | 512 mul, n_private=0 |
-| 17 | `full_vm_store` | zkVM + store 写内存（⚠️ "读见最近写"由 native 直接填值，未证时序） | combined | 256 mul, n_private=0 |
-| 18 | `full_vm_multi` | zkVM 多地址反复交替读写（⚠️ 同上，"读见最近写"为手工构造，非论证） | combined | 512 mul, n_private=0 |
-| 19 | `full_vm_jolt` | JOLT 风格指令执行（⭐ word 驱动 opcode 分发，**但这只是单行约束，跨行无传递**） | combined | 256 mul, n_private=0 |
+| 16 | `full_vm` | 完整 zkVM 状态机（⚠️ 有跨行 `x1/i/pc [t+1]`，**但**循环固定展开、执行模板化，内存表手工构造、未证时序） | combined | 512 mul, n_private=0 |
+| 17 | `full_vm_store` | zkVM + store 写内存（⚠️ **有跨行**，读-改-写循环；"读见最近写"由 native 直接填值，未证时序） | combined | 256 mul, n_private=0 |
+| 18 | `full_vm_multi` | zkVM 多地址反复交替读写（⚠️ **有跨行**；"读见最近写"为手工构造，非论证） | combined | 512 mul, n_private=0 |
+| 19 | `full_vm_jolt` | JOLT 风格指令执行（⭐ **真实 word 位解码** `word[7:6]`→is_addi/is_beq + **真实跨行 x1/pc `[c+1]`**；⚠️ 局限：单累加器 x1、无常驻寄存器堆、仅 addi+beq、limit 常量、无内存操作） | combined | 256 mul, n_private=0 |
+| 20 | `zkvm` | 逐行验证器（⚠️ **无跨行**——`let _ = pc`（PC 未约束）、`row.op` 为 native 枚举、内存表 native 填） | combined | 2048 mul, n_private=0 |
 
 ### 3.1 核心里程碑（诚实分级）
 - **切片 8（阶乘）⭐ 真正实现**：三要素（分支+多指令+整数乘法）合一，且有**跨行状态迁移**，
@@ -121,11 +122,13 @@
   （Twist/Shout sorter）从未实现**。此前标为"完整 SPICE 排序论证"**不准确**。
 - **切片 14（Jolt 桥接）**: 后端替换的**接口层**参考——Jolt 前端产出的 u64 trace 的结构能喂给
   二元域 logup* 的表。仅证明"数据形状兼容"，非"证明机制等价"。
-- **切片 16/17/18（full_vm 系列）⚠️ 夸大**: "读见最近写"为 **native 直接填值**（见跑通输出
-  `loads=[...] stores=[...]` 均为 run_program 算出），电路/论证**未证时序**；且 full_vm 本身
-  执行语义仍偏"模板化"（循环固定展开、仅少数指令）。
-- **切片 19（full_vm_jolt）**: word 驱动 opcode 分发（⭐ 真正的解码思想），**但只是单行约束**——
-  `drive_cycle` 内 match `row.op`，**跨行寄存器/PC 传递未实现**，非"真实控制流状态机"。
+- **切片 16/17/18（full_vm 系列）⚠️ 夸大（但*有跨行*）**: 确实有跨行状态绑定
+  （`x1/i/pc` 的 `[t+1]`，见报告 §3-1 具体约束行），但"读见最近写"为 **native 直接填值**
+  （`loads=[...] stores=[...]` 均为 run_program 算出），电路/论证**未证时序**；且执行语义仍偏
+  "模板化"（循环固定展开、仅少数指令）。
+- **切片 19（full_vm_jolt）⭐ 真解码 + 真实跨行（此前被误判）**: 具备 **①真实 word 位解码**
+  （`word[7:6]`→`is_addi`/`is_beq`，L88-91）+ **②真实跨行 x1/pc**（`execute_cycle(..., &x1_w[c+1], &pc_w[c+1])`，L197），
+  是全部切片中最接近"真正的状态机"的一个。其**真实边界**应为：**单累加器 x1（无常驻寄存器文件/rs1-rs2-rd 选择）、仅 addi+beq、limit 常量、无内存操作**。原文"单行约束、无跨行传递"**不成立**，已更正。
 
 ### 3.2 性能实测（release, i5-12400F）
 | 切片 | mul 约束 | prove | verify |
@@ -197,9 +200,12 @@ output: eq_cycle · ra · ( val + γ·(val + inc) )
 > 二元域 PCS = BaseFold（Binius64 自带），sumcheck 也由 Binius64 自带，二者都**无需自建**。
 > 前后端是同一栈（logup*/spartan 都在 BaseFold 上）。真正的工作是**工程整合**，不是域切换。
 
-> **整合状态（诚实更正）**：**并无"整合 zkVM"**。切片 16-19（full_vm 系列/zkvm.rs）是把
-> 多块机制放进一个文件的一次性**演示**，但**无跨行状态机、内存论证时序未证**（见 §2.5/§3.1）。
-> 真正有价值的基点是切片 8（factorial）的**跨行状态迁移**。以下为**真正需要做**的方向。
+> **整合状态（诚实更正）**：**并无"整合 zkVM"**。full_vm 系列（16-19）与 zkvm.rs（20）是
+> 把多块机制放进一个文件的一次性**演示**，**内存论证时序未证**（见 §2.5/§3.1）。注意：
+> **只有 `zkvm.rs` 完全无跨行**（`let _ = pc`，PC 未约束）；**full_vm 家族（16-18）与
+> full_vm_jolt（19）都有跨行状态绑定**（`x1/i/pc` 的 `[t+1]`，见报告 §3-1 约束行），其局限在
+> 执行模板化/无寄存器堆/内存时序手工填值。真正能作为跨行状态机基线的是切片 8（factorial）。
+> 以下为**真正需要做**的方向。
 
 1. **真正的通用状态机**：跨行寄存器传递（上一条 `rd` → 下一条 `rs1`）+ PC 推进约束
    （`pc_next = branch ? target : pc+4`）——这是"程序执行"的命门，目前**未实现**。
@@ -232,15 +238,16 @@ output: eq_cycle · ra · ( val + γ·(val + inc) )
 | 11 | 内存 store/load | Spartan |
 | 12-13 | 读⊆写/最近写判别 | logup* |
 | 14 | Jolt 前端桥接 | logup* |
-| 15 | 完整 SPICE 排序内存论证 | logup* |
+| 15 | mem_arg_spice(SPICE 排序, 无 sorter⚠️) | logup* |
 | 16 | full_vm 完整 zkVM 状态机 | combined |
 | 17 | full_vm_store 完整 zkVM+store(读-改-写循环) | combined |
 | 18 | full_vm_multi 多地址反复交替读写 | combined |
-| 19 | full_vm_jolt Jolt 风格指令执行(word 驱动·单行约束·无跨行) | combined |
+| 19 | full_vm_jolt Jolt 风格指令执行(word 解码+跨行, 单累加器) | combined |
+| 20 | zkvm 逐行验证器(无跨行, PC未约束⚠️) | combined |
 
 ```
 binius64/                       ← 项目根（fork 工作目录）
-├── crates/zkvm-slice/          ← 19 切片权威代码（+ README, Cargo.toml）
+├── crates/zkvm-slice/          ← 20 切片权威代码（lib crate, src/slices/; + README, Cargo.toml）
 └── zkvm-project/
     ├── README.md               ← 项目总览 + 19 切片速查表
     ├── PROGRESS.md             ← 构建顺序 / 进展 / 下一步

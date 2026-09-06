@@ -127,7 +127,7 @@ Fiat-Shamir transcript** 里同时证明两条腿：
 - 排障：soundness 篡改 opcode 位会让 witness walk 失败(build panic)，正确做法是**篡改
   logup* 的取指 eval_claim 为程序表不存在的 word** → verify 拒绝。
 
-## 切片 11: `mem_instr` — 内存指令（store/load + 读须见最近写）★★★
+## 切片 11: `mem_instr` — 内存指令（store/load + 读须见最近写）⚠️
 **补上 zkVM 最后一环**：程序 `addi x5,0x2a; sw x5,mem; lw x6,mem`，证明 load 读到
 store 写的值（read-after-write 一致性）：
 - **Spartan 层**：状态机——PC 续流(0x0→0xc 进位加) + store 写值==x5 + load 读入==x6
@@ -137,7 +137,7 @@ store 写的值（read-after-write 一致性）：
 - **128 mul**，闭环 + native 交叉验证(x6==0x2a) + **拒绝内存中不存在的 load 值** ✓
 - **= "读须见最近写"的内存参数化**已被证明（单地址；多地址置换留给 Spice 式下一步）。
 
-## 切片 12: `mem_arg` — 内存论证（多地址读-写一致性，sub-multiset）★★★
+## 切片 12: `mem_arg` — 内存论证（多地址读-写一致性，sub-multiset）⭐
 **zkVM 最难一环的真正落点**：之前的 `mem_lookup` 表是**手工给定**的，而 `mem_instr`
 只处理单地址。真正的 memory argument 用 logup* 做**子多重集合论证**——**store 和 load
 全部绑定到同一个内存表 T**：8 个 looker(4 store + 4 load)约束同一 T，从而在电路内强制
@@ -148,7 +148,7 @@ store 写的值（read-after-write 一致性）：
 - **soundness**：篡改 load 为从未 store 过的值 → **拒绝** ✓(读⊆写的核心)
 - **= 内存一致性用"论证"而非"查表"**：store+load 都 lock 到同一表，表非自由。
 
-## 切片 13: `mem_arg_ts` — 带时间戳内存论证（同一地址多写 · 最近写语义）★★★
+## 切片 13: `mem_arg_ts` — 带时间戳内存论证（同一地址多写 · 最近写语义）⚠️
 **memory argument 最完整的一环**：`mem_arg` 每地址一次写；真实 RAM 允许**同一地址
 多次 store**。本切片拆分**两个 logup 表**（同 transcript）：
 - **写日志表 W**：`(address, version) → value`（每个 store 一条，store 事件是 W 的 looker）
@@ -160,7 +160,7 @@ store 写的值（read-after-write 一致性）：
 - 诚实边界: version 由 trace 显式给出(未做排序器); 完整 SPICE 排序论证(Twist&Shout)
   是下一步, 但**最近写语义已判别证明**。
 
-## 切片 14: `jolt_bridge` — Jolt 前端 → Binius64 二元域后端桥接 ★★★
+## 切片 14: `jolt_bridge` — Jolt 前端 → Binius64 二元域后端桥接 ⚠️
 **后端替换的接口层实锤**：复刻 Jolt 前端 `JoltTraceRow`/`RAMAccess` 的 **u64 访问器
 契约**（`ram_address`/`ram_read_value`/`ram_write_value` + LD/SD 物理行别名，照
 `specs/proof-trace-row-layout.md`），构造真实内存访问 trace（**含同地址多写**），
@@ -171,7 +171,7 @@ store 写的值（read-after-write 一致性）：
 - **= 后端替换直接可行证据**：Jolt 前端 trace(u64) 无缝接 Binius64 二元域论证。
 - 对照详见 `~/workspace/binaryfield-zkvm/research/jolt-binius-memory-argument-mapping.md`。
 
-## 切片 15: `mem_arg_spice` — 完整 SPICE 排序内存论证（任意次写 · 全局时间戳）★★★
+## 切片 15: `mem_arg_spice` — SPICE 排序内存论证（任意次写 · 全局时间戳）⚠️
 **内存论证最终形态**：`mem_arg_ts` 用 per-address version（未证排序）；本切片用
 **全局时间戳 `ts` + 时间排序状态表** `T[ts*ADDR+addr]`，证明任意次"最近写"：
 - **任意次数写**：addr1 写三次(0x11->0x22->0x33)，不用固定每地址次数
@@ -182,7 +182,7 @@ store 写的值（read-after-write 一致性）：
 - 5 store + 2 load, T:32 单元(2^5), 闭环 + **拒过期值** ✓
 - 关键坑: `FieldBuffer` 表长度须为 **2 的幂** (ts_max*addr=32), 否则 panic。
 
-| ## 切片 16: `full_vm` — zkVM 演示（⚠️ 仅一次性演示，内存表手工构造）
+## 切片 16: `full_vm` — zkVM 演示（⚠️ 仅一次性演示，内存表手工构造）
 **⚠️ 诚实标注**：这是一个"把循环+内存+整数加法放进一个文件"的**演示**。它验证了循环加法、
 取指、内存查表能在**同一 transcript** 跑，但：
 - 执行语义**模板化**（硬编码 load/addi 路径，循环固定展开 N 轮）
@@ -200,11 +200,12 @@ store 写的值（read-after-write 一致性）：
 run_program 手工算出。"读见最近写"为手工构造，**未证时序**。512 mul, 闭环 + 拒假。
 **非"最强内存论证测试"**——只是演示，未真正论证。
 
-## 切片 19: `full_vm_jolt` — JOLT 风格 word 驱动指令执行（⭐ 真解码思想，⚠️ 无跨行）
-**⭐ 真正有价值的部分**：`execute_cycle` 解码取回 word 的 opcode 分发到 addi/beq（beq 用
-eq 树 + MUX 选 pc），这是**对的方向**。
-**⚠️ 但只是单行约束**：`match row.op` 是 native 固定的，**跨行寄存器/PC 传递未实现**，
-非"真实控制流状态机"。256 mul, 闭环 + 拒假。诚实边界：仅 x1，limit 常量，仅 addi/beq。
+## 切片 19: `full_vm_jolt` — JOLT 风格 word 驱动指令执行（⭐ 真解码+跨行，⚠️ 单累加器）
+**⭐ 真正有价值的部分**：`execute_cycle` 从 **word 位解码**（`word[7:6]`→is_addi/is_beq）分发
+到 addi/beq（beq 用 eq 树 + MUX 选 pc），并**真实跨行绑定 x1/pc 的 `[c+1]`**——是全部切片中
+最接近"真正的状态机"的一个。
+**⚠️ 真实边界**：**单累加器 x1**（无常驻寄存器文件/rs1-rs2-rd 选择）、**仅 addi+beq**、limit 常量、
+**无内存操作**。256 mul, 闭环 + 拒假。
 
 ## `zkvm`（zkvm.rs）— 逐行验证器（⚠️ 非"整合 zkVM 主代码"）
 **⚠️ 关键更正**：zkvm.rs **并非整合全部机制的 zkVM**，实为**逐行验证器 + 手工内存表**：
@@ -215,29 +216,14 @@ eq 树 + MUX 选 pc），这是**对的方向**。
 24 行 trace, n_mul=2048, n_private=0, 闭环 + 拒假。**不作为后续递增基线**。
 
 ## 运行
+本 crate 已重构为 lib（**无 bin 目标**，`cargo run --bin` 不可用）。改用测试运行 20 个切片：
+
 ```bash
 cd /home/yczhang/workspace/binius64
 export RUSTFLAGS="-C target-cpu=native"
-CARGO_BUILD_JOBS=4 cargo run -p binius-zkvm-slice --bin inst_lookup
-CARGO_BUILD_JOBS=4 cargo run -p binius-zkvm-slice --bin mem_lookup
-CARGO_BUILD_JOBS=4 cargo run -p binius-zkvm-slice --bin pc_glue
-CARGO_BUILD_JOBS=4 cargo run -p binius-zkvm-slice --bin pc_carry
-CARGO_BUILD_JOBS=4 cargo run -p binius-zkvm-slice --bin instr_step
-CARGO_BUILD_JOBS=4 cargo run -p binius-zkvm-slice --bin multi_inst
-CARGO_BUILD_JOBS=4 cargo run -p binius-zkvm-slice --bin branch
-CARGO_BUILD_JOBS=4 cargo run -p binius-zkvm-slice --bin factorial
-CARGO_BUILD_JOBS=4 cargo run -p binius-zkvm-slice --bin combined
-CARGO_BUILD_JOBS=4 cargo run -p binius-zkvm-slice --bin multi_combined
-CARGO_BUILD_JOBS=4 cargo run -p binius-zkvm-slice --bin mem_instr
-CARGO_BUILD_JOBS=4 cargo run -p binius-zkvm-slice --bin mem_arg
-CARGO_BUILD_JOBS=4 cargo run -p binius-zkvm-slice --bin mem_arg_ts
-CARGO_BUILD_JOBS=4 cargo run -p binius-zkvm-slice --bin jolt_bridge
-CARGO_BUILD_JOBS=4 cargo run -p binius-zkvm-slice --bin mem_arg_spice
-CARGO_BUILD_JOBS=4 cargo run -p binius-zkvm-slice --bin full_vm
-CARGO_BUILD_JOBS=4 cargo run -p binius-zkvm-slice --bin full_vm_store
-CARGO_BUILD_JOBS=4 cargo run -p binius-zkvm-slice --bin full_vm_multi
-CARGO_BUILD_JOBS=4 cargo run -p binius-zkvm-slice --bin full_vm_jolt
-CARGO_BUILD_JOBS=4 cargo run -p binius-zkvm-slice --bin zkvm
+CARGO_BUILD_JOBS=4 cargo test -p binius-zkvm-slice      # 运行全部 20 个切片测试
+# 单个切片（以 factorial 为例）：
+CARGO_BUILD_JOBS=4 cargo test -p binius-zkvm-slice --lib factorial
 ```
 
 ## 结论（诚实版）
