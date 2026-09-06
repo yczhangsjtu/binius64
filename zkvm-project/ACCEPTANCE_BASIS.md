@@ -91,10 +91,10 @@ CARGO_BUILD_JOBS=4 cargo test -p binius-zkvm-slice --lib factorial
 | `mem_arg_ts` | 带时间戳内存论证 | ⚠️ | 表手工构造，version trace 显式给出，未证排序 |
 | `jolt_bridge` | Jolt 前端→后端桥接 | ⚠️ | 仅"数据形状兼容"，非"证明机制等价" |
 | `mem_arg_spice` | SPICE 排序内存论证 | ⚠️ | 表 native 手工构造，仅证 value∈T[ts,addr]，**无 sorter/时序论证** |
-| `full_vm` | 完整 zkVM(循环+内存+整数) | ⚠️ 演示 | 执行模板化，读见最近写为手工填值 |
-| `full_vm_store` | zkVM+store(读写循环) | ⚠️ 演示 | "读见最近写"为 run_program 算出的常量 |
-| `full_vm_multi` | 多地址交替读写 | ⚠️ 演示 | 同上，"读见最近写"手工构造 |
-| `full_vm_jolt` | word 驱动 opcode 解码 | ⭐(部分)/⚠️ | ①解码思想对 ②但**单行约束、无跨行传递** |
+| `full_vm` | 完整 zkVM(循环+内存+整数) | ⚠️ 演示 | 有跨行 x1/i/pc[t+1]；执行模板化、读见最近写为手工填值 |
+| `full_vm_store` | zkVM+store(读写循环) | ⚠️ 演示 | 有跨行；"读见最近写"为 run_program 算出的常量 |
+| `full_vm_multi` | 多地址交替读写 | ⚠️ 演示 | 有跨行；"读见最近写"手工构造 |
+| `full_vm_jolt` | word 驱动 opcode 解码 | ⭐(部分)/⚠️ | ①word 位解码(word[7:6]→is_addi/is_beq)属实 ②跨行 x1/pc([c+1])属实；真实边界=单累加器 x1、无寄存器堆、仅 addi+beq、limit 常量、无内存操作 |
 | `zkvm` | 整合 zkVM | ⚠️ **非整合** | `let _=pc`(PC未约束)、row.op 为 match 死枚举、a/b 无跨行传递、内存表手工填 |
 
 ### 4.1 最重要的诚实边界（必须如实呈现）
@@ -102,9 +102,10 @@ CARGO_BUILD_JOBS=4 cargo test -p binius-zkvm-slice --lib factorial
    logup* 只证明**一致性**（claim∈表），**不证明时序**（该值确为最近一次写）。
    切片 `mem_instr/mem_arg_ts/mem_arg_spice/full_vm_*/zkvm` 均如此。
 2. **"排序/时序论证"(Twist/Shout sorter)从未实现**。
-3. **通用跨行状态机未实现**：只有 `factorial` 有真正的跨行寄存器/状态迁移
-   （`acc_w[r+1]`、`i_w[r+1]` 绑定下一行）。`full_vm_*`/`zkvm` 是逐行验证器，
-   **未连接**相邻行的寄存器/PC 传递。
+3. **跨行状态机覆盖（已修正表述）**：`multi_inst`/`multi_combined`/`full_vm(16-18)`/
+   `full_vm_jolt(19)` 均**有**跨行寄存器/PC 绑定（见各自 `[t+1]`/`[r+1]`/`[c+1]` 约束行）；
+   **仅 `zkvm.rs(20)` 无跨行**（`let _=pc`，PC 未约束）。`full_vm_*` 的真实局限是**执行
+   模板化、无真正指令译码/寄存器堆、内存时序为 native 手工填值**——而非"无跨行"。
 4. **指令 word 解码不完整**：`zkvm.rs` 的 `row.op` 来自 `run_program()` 的枚举
    （native match 死），**不是**从 word 的 opcode 位解码。
 

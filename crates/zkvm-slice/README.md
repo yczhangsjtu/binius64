@@ -106,7 +106,7 @@ x2=x2*x3; x3=x3+1;  if x3 <= x1 goto loop   # acc*=i; i++; while i<=n
 - 关键排障：`go` 必须用**当前 i**（`i<=n`）而非 `i+1`，否则少乘一轮（native 24*5=120
   时电路误判 go=0 不乘）→ witness 与约束 MUX 不匹配。
 
-## 切片 9: `combined` — 组合证明：logup* 查表 + Spartan 状态流转 ★★★
+## 切片 9: `combined` — 组合证明：logup* 查表 + Spartan 状态流转 ⭐
 **Jolt 模块边界在二元域上的架构核心验证**：一个 `addi x5,x5,1` 步骤，在**同一个
 Fiat-Shamir transcript** 里同时证明两条腿：
 - **Spartan 层**：ALU/寄存器/PC 状态流转（进位加 `x5+1`、`pc+4`）
@@ -117,7 +117,7 @@ Fiat-Shamir transcript** 里同时证明两条腿：
 - **= "后端替换 Jolt"可行性最本质验证**：Lasso(查表) + Spartan(约束) 可在 Binius64
   二元域上组合成单一证明。分开后不再需要程序内存逐字承诺（O(N×W) 取指代价消除）。
 
-## 切片 10: `multi_combined` — 多指令组合证明（查表取指+执行）★★★
+## 切片 10: `multi_combined` — 多指令组合证明（查表取指+执行）⭐
 **第一个"查表取指 + 约束执行"统一证明的真实多指令程序**：2 条连续 `addi x5,x5,imm`。
 - **Spartan 层**：逐条执行状态机（寄存器依赖链 + PC 续流 + 进位加，imm 从指令 word 提取）
 - **logup* 层**：程序内存查表，**每条已执行指令一个 looker** claim `T[pc]=word`

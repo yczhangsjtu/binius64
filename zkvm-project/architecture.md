@@ -249,7 +249,7 @@ output: eq_cycle · ra · ( val + γ·(val + inc) )
 binius64/                       ← 项目根（fork 工作目录）
 ├── crates/zkvm-slice/          ← 20 切片权威代码（lib crate, src/slices/; + README, Cargo.toml）
 └── zkvm-project/
-    ├── README.md               ← 项目总览 + 19 切片速查表
+    ├── README.md               ← 项目总览 + 20 切片速查表
     ├── PROGRESS.md             ← 构建顺序 / 进展 / 下一步
     ├── architecture.md         ← 本文档（勘误后）
     ├── HANDOFF_M-A2.md
