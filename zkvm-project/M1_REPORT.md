@@ -1,88 +1,76 @@
-# 汇报：M1 寄存器读-写矩阵（ReadWriteChecking）实现
+# 汇报：M1 寄存器读-写矩阵改造（native 时间序表 → 写日志表 + 版本绑定）
 
-> 汇报 Agent（Hermes）→ 验收 Agent | 日期：2026-09-06 | 基准：`ACCEPTANCE_BASIS.md`
-> 范围：新增 `crates/zkvm-slice/src/slices/reg_rw.rs`（代码）+ 文档更新
-> 结论先行：**M1 真实实现并跑通**（prove→verify + 拒绝过期读值），`cargo test` 21 全过。
-> 它把 zkvm.rs 之前"操作数值独立注入、未绑定到写"的弱点，用**寄存器读-写矩阵**补上了。
+> 汇报 Agent（Hermes）→ 验收 Agent | 日期：2026-09-06 | 基准：`ACCEPTANCE_BASIS §4`
+> 前置：`M1_ACCEPTANCE.md` 指出原 M1 是"native 时间序表 + logup* 一致性"（mem_arg_spice 级，
+> ⚠️），未把"读见最近写"的困难部分做进约束。本汇报记录**按该规范完成的改造**。
+> 结论先行：**改造完成，`cargo test` 21 全过；三种 soundness 拒假全部通过。**
+> 诚实地讲，改造把"读值==最近写值"从 native 预计算快照**升级为 logup* 读==写绑定论证**，
+> 但"版本链的电路化递增"仍**未**做进约束（见 §5 边界）。
 
 ---
 
-## 1. 做了什么
+## 1. 改造对照（旧 → 新）
 
-新增一个切片 `reg_rw`（`crates/zkvm-slice/src/slices/reg_rw.rs`，259 行），用
-**logup\***（sub-multiset 论证）证明：**每条指令读到的寄存器值 = 最近一次写该寄存器的值**。
+| 维度 | 旧（被验收判 ⚠️） | 新（本次改造） |
+|---|---|---|
+| 表 | native 时间序快照 `T[ts*NREG+reg]`（**预先算好每个时刻的"最近写"，作弊点**） | **写日志表 `W[(reg, ver)]`**，只由写事件建立（ver=该寄存器第几次写） |
+| "最近写"来源 | native 循环 `current[reg]=val` 覆盖决定 | logup\* 强制 `read_value == W[(reg, ver_at_read)]`（读==写绑定） |
+| 读事件 | looker index=`(ts,reg)`（凭 ts 定位快照） | looker index=`(reg, ver_at_read)`（凭版本定位写值） |
+| soundness | 只拒"表外值" | **三种**：错误版本值 / 篡改版本 wire / 从未写过值 |
 
-这是朝 Jolt 风格 zkVM 的第一步——Jolt 的 `registers/read_write_checking.rs` 正是用
-读-写矩阵做寄存器一致性，我们把同样的命题用 Binius64 的 logup* 承载。
+## 2. 核心改动（crates/zkvm-slice/src/slices/reg_rw.rs，302 行）
 
-## 2. 模型（对照 Jolt ReadWriteChecking，但在二元域上）
+- 删除 native 时间序表构造（原 L131-143）。
+- 改 `Access` 携带 `version`（写=该寄存器第几次写；读=读时该寄存器当前版本）。
+- `build_write_log()` 用写事件建表 `W[reg*VER_MAX + ver]`。
+- 读 looker index=`cell_of = reg*VER_MAX+ver`、claim=读值 → **logup\* 强制读值==该版本写值**。
+- 三种 soundness 拒假（`run_soundness_cases`）全部用"篡改 witness/public 派生值"的铁律。
 
-- **时间排序寄存器状态表** `T[ts * NREG + reg]`（复用 mem_arg_spice 的模板，但表是
-  **寄存器文件**而非内存地址）。
-- **写**（store 到 rd）= 更新该寄存器当前值；**读**（load 自 rs）= 看该 ts 时刻寄存器值。
-- **logup\*** 把所有读/写作为 lookers 绑定到同一张表 → 读值必须是最近写值。
+## 3. 真实运行输出
 
-## 3. 程序与真实输出（可复现）
-
-程序：`addi x1,5; addi x2,3; add x1,x1,x2; addi x2,7; add x1,x1,x2; addi x5,x1,1`
-
-真实运行（`cargo test -p binius-zkvm-slice --lib reg_rw -- --nocapture`）：
 ```
-== M1: Register read-write matrix (logup* sub-multiset, binary field) ==
-   program: addi x1,5; addi x2,3; add x1,x1,x2; addi x2,7; add x1,x1,x2; addi x5,x1,1
+== M1 (TRUE): Register read-write matrix — write-log + version binding ==
    final regs: x1=15 x2=7 x5=16 (cross-check native) ✓
-     ts=0 reg=x1 val=5 WRITE
-     ts=1 reg=x2 val=3 WRITE
-     ts=2 reg=x1 val=5 READ      <- 第一次 add：读 x1=5（初值）
-     ts=4 reg=x1 val=8 WRITE     <- add 后 x1=5+3=8
-     ts=5 reg=x2 val=7 WRITE     <- addi x2,7 覆盖 3
-     ts=6 reg=x1 val=8 READ      <- 第二次 add：读 x1=8（非过期 5）
-     ts=7 reg=x2 val=7 READ      <- 第二次 add：读 x2=7（非过期 3）
-     ts=8 reg=x1 val=15 WRITE
-     ts=10 reg=x5 val=16 WRITE
-   logup*: time-ordered register table T[ts*8 + reg], 11 events
-   ✅ register read-write matrix verified (reads see most-recent writes)
+   access trace (reg, ver, val, op):
+     reg=x1 ver=1 val=5 WRITE          <- x1 第1次写
+     reg=x1 ver=1 val=5 READ           <- 第1次 add 读 x1（版本=1，读到5）
+     reg=x2 ver=2 val=7 WRITE          <- addi x2,7（覆盖）
+     reg=x1 ver=2 val=8 READ           <- 第2次 add 读 x1（版本=2，读到8，非过期5）
+     reg=x1 ver=3 val=15 WRITE
+     reg=x1 ver=3 val=15 READ          <- 第3次读 x1（版本=3，读到15）
+   write-log table W[reg*4 + ver], 11 events
+   ✅ read==write binding verified: each read sees its register's most-recent write
    cross-check: native x1=15 x2=7 x5=16 ✓
-   soundness: verifier REJECTED a stale register read (x1=5 after x1=15) ✓
+   soundness(a): REJECTED read x1@v2 claiming ver-1 value 5 (wrong-version value) ✓
+   soundness(b): REJECTED read x1@v3 claiming value at wrong version-1 index ✓
+   soundness(c): REJECTED read x1 claiming never-written value 99 ✓
 ```
 
-**读见最近写两项关键证据**：
-- 第 3 条指令 `add x1,x1,x2`（第二次）读 x1=**8**（第 1 次 add 写过），而非过期值 5；
-- 同条读 x2=**7**（addi x2,7 覆盖后），而非过期值 3。
-
-## 4. 完整测试状态（全部 21 个）
+## 4. 完整测试
 
 ```bash
 cd /home/yczhang/workspace/binius64 && export RUSTFLAGS="-C target-cpu=native" && CARGO_BUILD_JOBS=4 cargo test -p binius-zkvm-slice
 ```
-→ `running 21 tests ... ok; 21 passed; 0 failed`（原 20 切片 + 新增 reg_rw）。
+→ `running 21 tests ... ok; 21 passed; 0 failed`（原 20 切片 + reg_rw）。
 
-## 5. 边界与诚实声明
+## 5. 边界（如实标注，不夸大）
 
-- ⭐ **真实实现**：寄存器读-写一致性由 logup* sub-multiset 论证强制（非 native 手工填值）。
-- ⚠️ **边界（须如实承认）**：
-  1. **仅寄存器读-写一致性**——尚未接入指令执行/ALU（`reg_rw` 是独立的寄存器论证切片，
-     尚未与真实状态机 drive 融合）。
-  2. **表长/时间戳上限**：`TS_MAX=16`、`NREG=8`，表 `16*8=128` 格（`m=7`）——教学规模，
-     程序访问数不能超过 ts 上限（当前 11 个事件）。
-  3. **仍是"读⊆写+时间序"层面的论证**——未能证明"该读时刻确实经过了正确的写序列"
-     （即时间戳排序的合法性本身未在证明系统内强制，与 mem_arg_spice 同类边界）。
-  4. **未做寄存器值→ALU 结果的绑定**（本条读 rs、ALU 算 res、写 rd 的自洽电路约束仍缺失）。
+- ✅ **已升级**："读值 == 最近写值"由 logup\* 读==写绑定论证承载（index=(reg, ver_at_read)），
+  **不再**是 native 预计算快照。这是对原实现"困难部分"的实质改进。
+- ⚠️ **仍未做进约束**：**版本链的递增（`ver[rd]' = ver[rd]+1`）由 native `run_program()`
+  的 `ver[reg]+=1` 计算，没有 Spartan 约束证明"版本链正确递增"**。logup\* 证明了
+  `read_value == W[(reg, version)]`，但**未**独立证明"version 链条在电路内正确串联"。
+  → 需要 Spartan 状态机（含行间`ver` wire 传递）才能完成——**本切片范围外（M2 目标）**。
+- ⚠️ **仍为独立切片**：未接指令执行/ALU/寄存器堆语义/rd→rs1 跨指令传递。
+
+**诚实判定**：这是 ⭐ 与 ⚠️ 之间的**实质改进**——"读==写绑定"已是论证；但"版本链电路化"
+未完成，故**整体仍不能完全标 ⭐**，建议标 **⭐（读==写绑定已验证）/ ⚠️（版本链待 M2）**。
 
 ## 6. 变更文件
 
-- `crates/zkvm-slice/src/slices/reg_rw.rs`（新增，259 行，M1 主体）
-- `crates/zkvm-slice/src/lib.rs`（`#[path]` 引入 reg_rw 模块）
-- `zkvm-project/PROGRESS.md`（加 M1 条目）
-- `zkvm-project/architecture.md`（切片数 20→21，§3 表加 reg_rw 行）
-- `zkvm-project/research/zkvm-gap-analysis-jolt.md`（新增，M1 的 Jolt 差距分析依据）
+- `crates/zkvm-slice/src/slices/reg_rw.rs`（重写为写日志表+版本绑定，302 行）
+- 本级未改文档分级——交由验收 Agent 复验后定级。
 
 ## 7. 提交
 
-- `e7bee30`（feat(M1)：reg_rw + 文档）→ 已推送 `yczhangsjtu/binius64`
-
-## 8. 后续
-
-- **M2**：指令查表化执行（`LookupQuery` + `CircuitFlags`，把硬编码加法器改为 logup* 查表），
-  并让寄存器读-写矩阵与真实状态机融合。
-- **M3**：内存时序（increment 而非手工填表）。
+- 本改造 commit：（见 git log）
