@@ -133,6 +133,9 @@ program (RISC-V machine code, 预先 witness)
 
 ## 6. 分阶段里程碑（baseline 本身）
 
+> ⚠️ 编号勘误（2026-09-06）：本文档为 flock 时代设计（整体已废止），其 M-A/M-B/M-C/M-D
+> 里程碑编号不再使用。当前权威里程碑为 Binius64 时代的 M1-M6，见 `designs/milestone-roadmap.md`。
+
 - **M-A（baseline 0）**：`ADD SUB AND OR XOR SLL SRL SRA LUI AUIPC ADDI` 等基础指令门 + trace 骨架 + 单程序跑通（略 MUL/DIV）。→ 打平"指令门 pipeline"。
 - **M-B（baseline 1）**：+ `LW SW BEQ BNE JAL JALR` + 有界内存 + 控制流一致 → 跑通阶乘/冒泡。
 - **M-C（baseline 2）**：+ `RV32M MUL/MULH/...`，补每类指令指标表，产出 **baseline 成本量化文档**。

@@ -55,6 +55,7 @@ flock 的 `CircuitBuilder` wiring 与 witness packing 的 `Wiring(Gkr(ProductMis
   - 通用 CLI: prove(默认) / stat / composition / check-snapshot / save
 
 ## 下一步建议 (M-B 起)
+> ⚠️ 编号勘误（2026-09-06）："M-B"编号已废弃，当前权威里程碑为 M1-M6，见 `designs/milestone-roadmap.md`。
 - **验证核心 API**: 用 `binius_frontend::CircuitBuilder` 手写一个最小 RV32I 指令门
   (ADD/AND/XOR/SLL)，走 prove→verify 端到端 —— 验证"写指令门"的开发体验
 - **把 M-A1 的 isasim.rs RV32I 解释器接入**: 每条指令 trace 出一个词级约束子电路，

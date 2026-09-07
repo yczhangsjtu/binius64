@@ -77,6 +77,11 @@
 - 交付：新切片 `reg_rw`（或并入真实 zkvm），多寄存器（x1/x2/x5）+ 读-写一致 + soundness 拒假。
 
 ### 里程碑 M2：查表化执行（LookupQuery + CircuitFlags）
+> ⚠️ **勘误（2026-09-06）**：本节 M2/M3 定义已经 Jolt 迁移难度分析修正并重编号——Jolt 的
+> LookupQuery 依赖素域整数嵌入（combined-operand trick），在 char-2 整体失效，不能照抄；
+> 本节 M3 的"Jolt 式 one-hot+increment"建立在被高估的 Twist↔logup* 同构上（Twist 非 multiset）。
+> 统一编号（权威：`designs/milestone-roadmap.md`）：本节 M2 → 新 **M2**（执行层选型 spike）+
+> 新 **M3**（通用单周期状态机）；本节 M3 → 新 **M4**（RAM 内存论证 T1）。
 - 在 M1 基础上，把"addi 执行"从**硬编码进位加法器**改为 **logup\* 查表**：
   `to_lookup_operands→(rs1,imm)`、`to_lookup_output→rs1+imm`，用查表证明结果。
 - 引入 `CircuitFlags`（AddOperands/WriteLookupOutputToRD/Load/Store/Branch/Jump）做**通用分发**，
@@ -85,6 +90,7 @@
 
 ### 里程碑 M3：内存时序（可选，M1/M2 之后）
 - 用 increment（one-hot 计数）而非排序器，做 RAM 读写检查。替换当前手工填表。
+  （勘误同上：修正后定义为"新 M3 写日志+版本链机制推广到 RAM + init/final 检查"，即新 M4。）
 
 ## 5. 为什么必须参考 Jolt
 不参考 Jolt，我们会继续做"定制算术电路"，永远到不了"成本 ∝ 指令数"。Jolt 的

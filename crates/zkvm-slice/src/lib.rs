@@ -14,7 +14,8 @@
 //! inside this crate). Each slice's `run_<name>` becomes a `#[test]`.
 
 pub mod alu;
-pub mod encode;
+pub mod vm32;
+
 
 // Slice modules. Each file under src/bin/ had its `fn main()` renamed to
 // `pub fn run_<stem>()` by `scripts/migrate_slices.py`. They are pulled in here
@@ -61,6 +62,16 @@ mod full_vm_jolt;
 mod zkvm;
 #[path = "slices/reg_rw.rs"]
 mod reg_rw;
+#[path = "slices/word_add.rs"]
+mod word_add;
+#[path = "slices/word_add_combined.rs"]
+mod word_add_combined;
+#[path = "slices/word_vm.rs"]
+mod word_vm;
+#[path = "slices/word_vm_ram.rs"]
+mod word_vm_ram;
+#[path = "slices/word_vm32.rs"]
+mod word_vm32;
 
 // Re-export the run functions so integration (or future bins) can call them.
 pub use inst_lookup::run_inst_lookup;
@@ -83,3 +94,9 @@ pub use full_vm_store::run_full_vm_store;
 pub use full_vm_multi::run_full_vm_multi;
 pub use full_vm_jolt::run_full_vm_jolt;
 pub use zkvm::run_zkvm;
+pub use reg_rw::run_reg_rw;
+pub use word_add::run_word_add;
+pub use word_add_combined::run_word_add_combined;
+pub use word_vm::run_word_vm;
+pub use word_vm_ram::run_word_vm_ram;
+pub use word_vm32::run_word_vm32;

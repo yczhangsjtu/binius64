@@ -2,6 +2,16 @@
 
 日期: 2026-09-05 | 来源: `workspace/jolt` (a16z, clone)，对照 `binius64/crates/zkvm-slice`
 
+> ⚠️ **勘误（2026-09-06，经 fork 代码逐行复核）**：本文 §3 称 Twist 的
+> `ra·(val+γ(val+inc))` 与 logup* multiset"语义同构 / 证明同一命题"，并映射
+> `ram_inc → 版本序号 ver`——**该同构被高估**：Twist 不是 multiset 论证（无
+> permutation/multiset 等式），而是"已提交 inc 流 + Val 链式构造 + LT 加权累加 +
+> init/final/output 三件套"的函数式累加；`inc` 是**值的增量**而非版本计数器（Twist
+> 无 timestamp 概念，本项目 `mem_arg_ts`/`reg_rw` 的写日志+version 在 Jolt 中无对应物）。
+> 说对的部分：ra one-hot、eq 绑定、H²−H booleanity 在 char-2 原样成立；前端 trace
+> 域无关可保留。完整更正与分层迁移评估见
+> `research/jolt-to-binary-field-migration-assessment.md` §3。
+
 ## 0. 结论先行
 Jolt 的 RAM memory-checking **不是全局排序器**，而是
 **one-hot addressing + write-increment + sumcheck 关系式**。它在代数语义上

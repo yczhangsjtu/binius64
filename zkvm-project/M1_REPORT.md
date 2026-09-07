@@ -60,11 +60,11 @@ cd /home/yczhang/workspace/binius64 && export RUSTFLAGS="-C target-cpu=native" &
 - ⚠️ **仍未做进约束**：**版本链的递增（`ver[rd]' = ver[rd]+1`）由 native `run_program()`
   的 `ver[reg]+=1` 计算，没有 Spartan 约束证明"版本链正确递增"**。logup\* 证明了
   `read_value == W[(reg, version)]`，但**未**独立证明"version 链条在电路内正确串联"。
-  → 需要 Spartan 状态机（含行间`ver` wire 传递）才能完成——**本切片范围外（M2 目标）**。
+  → 需要 Spartan 状态机（含行间`ver` wire 传递）才能完成——**本切片范围外（新 M3 目标，编号见 `designs/milestone-roadmap.md`）**。
 - ⚠️ **仍为独立切片**：未接指令执行/ALU/寄存器堆语义/rd→rs1 跨指令传递。
 
 **诚实判定**：这是 ⭐ 与 ⚠️ 之间的**实质改进**——"读==写绑定"已是论证；但"版本链电路化"
-未完成，故**整体仍不能完全标 ⭐**，建议标 **⭐（读==写绑定已验证）/ ⚠️（版本链待 M2）**。
+未完成，故**整体仍不能完全标 ⭐**，建议标 **⭐（读==写绑定已验证）/ ⚠️（版本链待新 M3，编号见 `designs/milestone-roadmap.md`）**。
 
 ## 6. 变更文件
 

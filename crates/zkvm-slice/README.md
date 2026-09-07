@@ -1,7 +1,7 @@
 # binius-zkvm-slice — Binius64 zkVM 验证 crate
 
 **日期**: 2026-09-01 → 2026-09-05 | **状态**: 已重构为 **lib crate**（`src/lib.rs`），
-20 个验证切片作为模块（`src/slices/*.rs`）暴露为 `#[test]`。
+26 个验证切片作为模块（`src/slices/*.rs`）暴露为 `#[test]`。
 
 > ⚠️ **诚实勘误（2026-09-05 经逐行代码审查）**：这些切片验证的是**单机制可行**，
 > **不是**一个完整的 zkVM，**未实现**真正的内存论证（时序/排序）、**未实现**通用的
@@ -10,19 +10,38 @@
 > 标注（⚠️=夸大/需修正，⭐=真正实现）。
 
 ## 结构（重构后）
-- `src/lib.rs` — crate 根，`pub mod alu` / `pub mod encode`，`#[path]` 引入 20 个切片模块
+- `src/lib.rs` — crate 根，`pub mod alu` / `pub mod vm32`，`#[path]` 引入 26 个切片模块
 - `src/alu.rs` — **共享 ALU 工具**：`to_bits`/`fa`/`add_constant`/`inc8`/`mul8`/`leq8`/`native_xor`/`assert_bits`
   （此前 `to_bits` 重复 13 次、`fa` 重复 12 次 → 现在各一处）
-- `src/encode.rs` — **共享 RISC-V 编码**：`OP_*`/`F3_*`/`enc_addi`/`enc_add`/`enc_lw`/`enc_sw`/`enc_beq` + word 字段提取
-- `src/slices/*.rs` — 20 个验证切片，每个 `fn main()` 改成 `pub fn run_<name>()`，末尾附 `#[test]`
+- `src/vm32/` — **M5 词级 VM 固化库（M6 T1）**：
+  - `isa.rs` — 真 RV32I 编码器（enc_r/i/s/b/u/j + 30 指令构造 + OP_* 常量 + fn_rv32 解码 + sext）；含 `enc_add`（原 `encode.rs` 遗留，word_add_combined 用）
+  - `interp.rs` — native 参考解释器（`run_program`，参数化程序镜像/init_mem/overrides/fetch 基表）+ trace 类型
+  - `circuit.rs` — `build_circuit`（译码/执行/32 寄存器值+版本链/RAM 版本链/事件钉扎/inout 布局）+ 词级门辅助（mux/mux8/变量移位/MSB-bool）
+  - `proof.rs` — `run_machine_full`（prove + 三表 logup* + verify + 三件套）+ `reverify`/`reverify2` + `claims_from_inout` + wlog 构建 + fetch 表构建
+  - `per_inst_tests.rs` + `bench_tests.rs` — 单元测试与成本基准（见下）
+- `src/slices/*.rs` — 26 个验证切片，每个 `fn main()` 改成 `pub fn run_<name>()`，末尾附 `#[test]`
 
 ## 运行（用测试代替 cargo run）
 ```bash
-# 全部 20 个切片的 prove→verify + 拒假测试
+export RUSTFLAGS="-C target-cpu=native"   # 必选（AVX2）
+export CARGO_BUILD_JOBS=4
+
+# ---- 快测试（秒级）：全部 39 个测试，含 26 切片 prove/soundness + 5 per-instruction + 5 独立 soundness ----
 CARGO_BUILD_JOBS=4 cargo test -p binius-zkvm-slice
 
-# 单个切片测试
+# 单切片测试
 CARGO_BUILD_JOBS=4 cargo test -p binius-zkvm-slice --lib factorial
+
+# 子集：
+#   per-instruction 单元测试（vm32::interp，30 指令 × 边界向量，~160 断言，毫秒级）
+CARGO_BUILD_JOBS=4 cargo test -p binius-zkvm-slice --lib per_inst
+#   soundness 独立用例（每个 #nbsp;[test] 单独定位）
+CARGO_BUILD_JOBS=4 cargo test -p binius-zkvm-slice --lib soundness
+#   切片的端到端 prove 集成测试（torture / bubblesort，含 logup* 与三件套）
+CARGO_BUILD_JOBS=4 cargo test -p binius-zkvm-slice --lib word_vm32
+
+# ---- 慢测试（~5s，默认跳过）：每指令成本基准（M6 T3，产出 BENCHMARKS.md 数字）----
+CARGO_BUILD_JOBS=4 cargo test -p binius-zkvm-slice --lib -- --ignored --nocapture bench_instruction
 ```
 > 之前的 `cargo run --bin <name>`（20 次）已改为 `cargo test`（一次跑全部）。
 
@@ -215,13 +234,65 @@ run_program 手工算出。"读见最近写"为手工构造，**未证时序**�
 - 内存表是 **native 手工填的** `tvec`，logup* 只证 claim∈表，**不证时序**。
 24 行 trace, n_mul=2048, n_private=0, 闭环 + 拒假。**不作为后续递增基线**。
 
+## 切片 22: `word_add` — 词级 `add rd, rs1, rs2`（⭐ 真词级门，M2）⭐
+**M2 spike 的 T2/T4**：用**真词级门** `binius_frontend::CircuitBuilder::iadd_32` 构建单条 32-bit `add`，
+prove→verify + 拒假。**不是**位级全加器链改名。
+- 约束：**ZERO=1 AND=1 IMUL=0 BMUL=0**（`CircuitStat` 实测，word_add.rs:78/104）。位级对照（32-bit
+  `alu::fa` 全加器链于 spartan R1CS）为 **mul=256**，prove 3.2ms vs 35.1ms（约 11×，debug 构建）。
+- 拒假为真：篡改 **public rd**（=`a+b+1`）→ `verify().is_err()`（word_add.rs:125），非常规 panic/编译错。
+- **诚实边界**：单条 add 无寄存器堆；rd/rs 均 inout 公开；32-bit 语义（upper 半字独立加法）；
+  位级对照跑在 spartan R1CS（不同后端），约束数为主指标、耗时跨后端量级参考。
+
+## 切片 23: `word_add_combined` — 词级门 + logup* 取指，单一 transcript（⭐ M2 核心 spike）⭐
+**M2 spike 的 T3（阳性）**：frontend 词级门 `iadd_32` 与 logup* 程序取指查表在**同一
+`ProverTranscript<HasherChallenger<Sha256>>`** 上闭环——`frontend prove → sample(gamma) → logup* prove →
+into_verifier → frontend verify → sample(gamma) → logup* verify`（word_add_combined.rs:70-95）。
+- 程序：`add x5,x6,x7 @ pc 0x00`（word 0x007302b3），x6=0xdeadbeef x7=0x11111111 → x5=0xefbed000。
+- **两个 soundness 都真拒**：篡改 public rd；篡改 logup* 表内指令字 → verify 返回 Err。
+- **诚实边界**：单条 add + 单地址取指；logup* 程序表由 native 直接给定（`prog[init_pc]=inst`），
+  logup* 只证"执行的指令字∈程序表"（**一致性**），**不证明可执行内存/时序**（属 M3）；
+  **取指 word 未驱动执行**（x6/x7 直接注入 inout，无"译码→操作数"绑定）——本切片证明的是
+  "两个证明系统可共享 transcript"（M2 选型问题），"执行的指令==取指的指令"的语义绑定属 M3。
+
+## 切片 24: `word_vm` — 通用单周期状态机（⭐ M3 核心：译码驱动 + 版本链电路化 + logup* 读写绑定）⭐
+**M3（WORD-VM）**：一个真实的最小单周期状态机，闭合 M1/M2 遗留的两个语义缺口——
+（1）**word 译码驱动执行**：`addi/add/beq` 从指令字经词级门提取 op/rd/rs1/rs2/imm，据译码结果选择执行，
+非"操作数直接注入"；（2）**register read==most-recent-write 由 logup* 强制**：读事件值经
+`W[(reg, ver_at_read)]` 绑定写日志表 + **版本链电路化封装**（`ver_{t+1}[r]=ver_t[r]+写?1:0` 为约束承载），
+非 native 填正确值。
+- 程序：`addi x1,x1,1; add x2,x2,x1; addi x3,x3,1; beq x3,x4,+8; beq x5,x5,-16; halt`，x4=limit=2。
+  **10 周期**（2 次循环体），`taken/not-taken` 各 ≥1、同一寄存器（x1/x2/x3）被写 ≥2 次、跨指令读见最近写。
+- **单一 transcript 组合**：`frontend prove → sample(gamma) → logup* prove(取指表+写日志表) →
+  into_verifier → frontend verify → sample(gamma) → logup* verify`。
+- **4/4 soundness 真拒**：过期读（旧版本值）、版本索引篡改、非法取指（不在程序表）、最终寄存器 public 输出篡改
+  → verify 均返回 Err。
+- 约束（10 周期，**v2 绑定返工后**）：ZERO=127 AND=444 IMUL=0 BMUL=519（gates=1348）；约 **134.8 gate/指令**（成本∝指令数而非位宽；v2 含读/写事件 inout 绑定约束，见 `M3_REPORT.md` §0）。
+- **诚实边界**：程序表/写日志表由 native 给定；logup* 只证一致性（claim∈表），**不证明内存/时序**（属 M3 之后）；
+  固定轮数全展开（无动态循环）；x0 非硬零（8 寄存器视作真实寄存器）。
+
+## 切片 25: `word_vm_ram` — RAM 内存论证（⭐ M4：lw/sw + K=64 字 + 读值经 logup* 钉住）⭐
+**M4（WORD-VM-RAM）**：在 M3 状态机上推广内存——**lw(0x03)/sw(0x23)** 译码驱动执行，K=64 字地址空间（32-bit 字），
+**RAM 读值只由 logup* 钉住**（电路**不建跨地址值链**，只维护 **64 个版本计数器** = O(K·T) 进电路），
+RAM 写日志表进 logup*（**现共 3 张表**：fetch + 寄存器写日志 + RAM 写日志，单 transcript），
+**init/final/output 三件套**验证端显式断言。
+- 程序：`lw/add/addi/sw/lw/add/addi/beq/beq/sw/halt`，mem[8]=5, mem[9]=7, OUT=mem[10]，x4=limit=3。
+  **28 周期**（3 次循环体），`lw/sw` 同地址多写（mem[8] 写 3 次）、跨迭代读见最近写（RAW）、≥2 地址、≥1 输出单元。
+- **单一 transcript 组合**：`frontend prove → sample(gamma) → logup* prove(取指+寄存器写日志+RAM 写日志 3 表) →
+  into_verifier → frontend verify → sample(gamma) → logup* verify`。
+- **5/5 soundness 真拒**：①**过期读**（load 读到旧版本值 → **电路过+logup* 拒**，分层）；②版本索引篡改（inout 拒）；
+  ③越界/未初始化读非零值（→ 电路过+logup* 拒，分层）；④初始镜像篡改（verifier init 检查拒）；⑤结果（final ver inout）篡改。
+- 约束（28 周期）：ZERO=653 AND=6902 IMUL=0 BMUL=4709（gates=12743）；约 **454.7 gate/周期**，
+  **成本主项 = O(K·T) RAM 版本链**（64×28 计数器，与指令数无关，任务书 §2 已知边界）。
+- **诚实边界**：RAM 写日志表由 native 给定；logup* 只证一致性；**地址越界经 `& 0x3f` 掩码静默到合法地址**（未硬拒 OOB）；
+  `VER_MAX=8`/`M_FETCH=6` 因 M4 循环 x6 写 6 次、程序地址到 0x28 而提升（`reg*VER_MAX+ver` 单索引需防碰撞）。
+
 ## 运行
-本 crate 已重构为 lib（**无 bin 目标**，`cargo run --bin` 不可用）。改用测试运行 20 个切片：
+本 crate 已重构为 lib（**无 bin 目标**，`cargo run --bin` 不可用）。改用测试运行 25 个切片：
 
 ```bash
 cd /home/yczhang/workspace/binius64
 export RUSTFLAGS="-C target-cpu=native"
-CARGO_BUILD_JOBS=4 cargo test -p binius-zkvm-slice      # 运行全部 20 个切片测试
+CARGO_BUILD_JOBS=4 cargo test -p binius-zkvm-slice      # 运行全部 25 个切片测试
 # 单个切片（以 factorial 为例）：
 CARGO_BUILD_JOBS=4 cargo test -p binius-zkvm-slice --lib factorial
 ```

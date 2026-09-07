@@ -83,7 +83,7 @@
 > 但证明的强度**低于切片 8（factorial）**——后者才有真正的跨行状态迁移。`zkvm.rs` 不作为
 > 后续递增基线，仅作为"把多块小机制塞进一个文件"的一次性演示。
 
-## 3. 已实现证据链：21 个机制（全部端到端 + soundness 拒假）
+## 3. 已实现证据链：26 个切片（全部端到端 + soundness 拒假）
 
 `crates/zkvm-slice/`。每个切片 = 最小 prove→verify + 一个"故意篡改被拒"的 soundness 测试。
 
@@ -111,6 +111,13 @@
 | 20 | `zkvm` | 逐行验证器（⚠️ **无跨行**——`let _ = pc`（PC 未约束）、`row.op` 为 native 枚举、内存表 native 填） | combined | 2048 mul, n_private=0 |
 | 21 | `reg_rw` | **寄存器读-写矩阵**（⭐ 真：时间排序寄存器表 `T[ts*NREG+reg]`，读见最近写，多寄存器可寻址） | logup* | 11 事件, 拒过期读值 |
 
+
+| 22 | `word_add` | **词级单词指令门**（⭐ M2：32-bit `add` 用 frontend `iadd_32`，约束 ZERO=1 AND=1） | frontend | 1 AND, 0 IMUL（位级对照 256 mul） |
+| 23 | `word_add_combined` | **词级门 + logup* 单 transcript**（⭐ M2 选型 spike：frontend prove → γ → logup* prove → verify） | combined | 闭环 + 2 soundness 拒 |
+| 24 | `word_vm` | **通用单周期状态机**（⭐ M3：word 译码驱动 + 32 寄存器值/版本双链电路化 + 写日志 logup*） | combined | 10 cyc, gates=1348, 4/4 拒 |
+| 25 | `word_vm_ram` | **RAM 内存论证**（⭐ M4：lw/sw + K=64 + 64 版本计数器 O(K·T) + 三表 logup* + 三件套） | combined | 28 cyc, gates=12743, 5/5 拒 |
+| 26 | `word_vm32` | **真 RV32I 32 位 VM**（⭐ M5/M6：30 指令标准编码、32 寄存器、S 型 store 地址修复、bubblesort 端到端、`vm32/` 库化；详见 M5/M6 报告） | combined | 50 cyc 48,821 gates / bubble 391 cyc 382,660 gates, 5/5 拒 |
+
 ### 3.1 核心里程碑（诚实分级）
 - **切片 8（阶乘）⭐ 真正实现**：三要素（分支+多指令+整数乘法）合一，且有**跨行状态迁移**，
   证明"成本 ∝ 指令数、与类型无关"在**含循环+乘法**的程序上成立。这是最具现实意义的切片。
@@ -130,6 +137,21 @@
 - **切片 19（full_vm_jolt）⭐ 真解码 + 真实跨行（此前被误判）**: 具备 **①真实 word 位解码**
   （`word[7:6]`→`is_addi`/`is_beq`，L88-91）+ **②真实跨行 x1/pc**（`execute_cycle(..., &x1_w[c+1], &pc_w[c+1])`，L197），
   是全部切片中最接近"真正的状态机"的一个。其**真实边界**应为：**单累加器 x1（无常驻寄存器文件/rs1-rs2-rd 选择）、仅 addi+beq、limit 常量、无内存操作**。原文"单行约束、无跨行传递"**不成立**，已更正。
+
+- **切片 24/25/26（M3/M4/M5）⭐ 现代证据链**：M3 把"word 译码驱动 + 版本链电路化 + 读见最近写"
+
+  做成通用状态机；M4 推广到 RAM（64 版本计数器 = O(K·T) 链成本主项，读值只由 logup* 钉住）；
+
+  M5 扩到真 RV32I 32 位（30 指令、bubblesort 端到端、S 型 store 地址修复），M6 固化为 `vm32/` 库 +
+
+  每指令成本基准。各切片详细报告见 `M3_REPORT.md`/`M4_REPORT.md`/`M5_REPORT.md`/`M6_REPORT.md`，
+
+  里程碑总览见 `designs/milestone-roadmap.md`。
+
+- **切片 16-20（full_vm/zkvm 演示家族）⚠️ 已被 M3-M5 超越**：其"读见最近写手工填表"等局限在
+
+  M3 以后的版本链 + logup* 绑定中已解决，本节演示仅作历史证据保留（见 milestone-roadmap M1-M5 对照）。
+
 
 ### 3.2 性能实测（release, i5-12400F）
 | 切片 | mul 约束 | prove | verify |
@@ -197,6 +219,15 @@ output: eq_cycle · ra · ( val + γ·(val + inc) )
 
 ## 6. 下一步路线图
 
+> **M1-M6 已完成（2026-09-07，收官）**：本节 1-4 条（通用状态机/内存论证/word 驱动解码/32-bit 扩展）
+
+> 已在 M3（word_vm 状态机 + 版本链）、M4（RAM 论证）、M5（RV32I 32-bit + bubblesort）、M6（固化库 +
+
+> 测试套件 + 每指令成本基准）落地，权威定义与验收见 `designs/milestone-roadmap.md` 与各 M 报告；
+
+> 第 5 条（固化库）即 M6 本体。遗留边界（固定展开/表 native 共享/O(K·T) 版本链/字寻址）见项目 README。
+
+
 > **勘误**：旧版把"域切换攻坚（Jolt sumcheck → 二元域 PCS）"列为最大工程——**这是错误的**。
 > 二元域 PCS = BaseFold（Binius64 自带），sumcheck 也由 Binius64 自带，二者都**无需自建**。
 > 前后端是同一栈（logup*/spartan 都在 BaseFold 上）。真正的工作是**工程整合**，不是域切换。
@@ -207,6 +238,13 @@ output: eq_cycle · ra · ( val + γ·(val + inc) )
 > full_vm_jolt（19）都有跨行状态绑定**（`x1/i/pc` 的 `[t+1]`，见报告 §3-1 约束行），其局限在
 > 执行模板化/无寄存器堆/内存时序手工填值。真正能作为跨行状态机基线的是切片 8（factorial）。
 > 以下为**真正需要做**的方向。
+
+> **勘误（2026-09-06）**：本节 1-3 条已按 Jolt 迁移难度分析（`research/jolt-to-binary-field-migration-assessment.md`）
+> 重新评估并重编号为统一里程碑 **M1-M6**，权威定义见 `designs/milestone-roadmap.md`。
+> 修正要点：① Jolt 的 LookupQuery 查表化执行依赖素域整数嵌入（combined-operand trick），
+> char-2 下失效，须先经 **M2** spike 决策"位级 R1CS vs 词级 frontend 门"；② "Jolt 式
+> one-hot+increment 内存论证"建立在被高估的 Twist↔logup* 同构上，**M4** 改为把 **M3** 的
+> 写日志+版本链机制推广到 RAM（而非翻译 Twist）；③ 版本链电路化与通用跨行状态机合并入 **M3**。
 
 1. **真正的通用状态机**：跨行寄存器传递（上一条 `rd` → 下一条 `rs1`）+ PC 推进约束
    （`pc_next = branch ? target : pc+4`）——这是"程序执行"的命门，目前**未实现**。

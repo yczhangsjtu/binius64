@@ -9,16 +9,20 @@ path = "src/lib.rs"
 
 [dependencies]
 binius-compute = { path = "../compute" }
+binius-core = { path = "../core" }
 binius-field = { path = "../field" }
+binius-frontend = { path = "../frontend" }
 binius-hash = { path = "../hash" }
 binius-ip = { path = "../ip" }
 binius-ip-prover = { path = "../ip-prover" }
 binius-math = { path = "../math" }
+binius-prover = { path = "../prover" }
 binius-spartan-frontend = { path = "../spartan-frontend" }
 binius-spartan-prover = { path = "../spartan-prover" }
 binius-spartan-verifier = { path = "../spartan-verifier" }
 binius-transcript = { path = "../transcript" }
 binius-utils = { path = "../utils" }
+binius-verifier = { path = "../verifier" }
 rand.workspace = true
 sha2.workspace = true
 tracing = "0.1"

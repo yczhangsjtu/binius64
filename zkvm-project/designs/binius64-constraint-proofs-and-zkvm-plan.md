@@ -120,6 +120,7 @@ Binius64 提供的是**词级约束后端 + frontend**，不是 VM。zkVM = "通
 | LW/SW | 内存一致性约束 | array select + equality |
 
 ### B.4 最小纵向切片（M-B）
+> ⚠️ 编号勘误（2026-09-06）："M-B/M-C"编号已废弃，当前权威里程碑为 M1-M6，见 `designs/milestone-roadmap.md`。
 1. 写单条 ADD 指令门: 两寄存器进 → 和出，用 IMUL 约束进位正确。
 2. 端到端 prove/verify 一条真实 ADD trace（native 对拍 ground-truth）。
 3. 扩展 AND/XOR/SLL: 复用 isasim.rs trace。

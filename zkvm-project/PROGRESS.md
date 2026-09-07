@@ -31,6 +31,74 @@
 - 运行：`cargo test -p binius-zkvm-slice --lib reg_rw`
 - **替代了 zkvm.rs 的"a/b 独立注入值"问题**：这里读值通过寄存器表强制 == 最近写值。
 
+### 里程碑 M2：执行层选型 spike（词级门 vs 位级 R1CS）⭐ 完成（2026-09-06，见 `M2_REPORT.md`）
+- **决策：建议 W2（词级门）**。frontend 词级 `iadd_32` 与 logup* 取指在**同一 transcript**
+  组合成功——任务书标"未验证"的**最大风险已排除**。
+- 新增切片（⭐ 真，均为词级门，非位加器改名）：
+  - `word_add`（切片 22）：单条 32-bit `add`，`iadd_32` 门，约束 **ZERO=1 AND=1 IMUL=0 BMUL=0**；
+    位级对照（spartan R1CS 全加器链）**mul=256**；prove 3.2ms vs 35.1ms（debug，约 11×）。
+    拒假：篡改 public rd → verify Err。
+  - `word_add_combined`（切片 23）：frontend `iadd_32` + logup* 取指，**单一 transcript** 闭环；
+    两个 soundness（public rd、logup* 指令字）真拒。
+- 测试：`cargo test -p binius-zkvm-slice` → **23 passed**（原 21 + 2）。
+- **诚实边界**：logup* 程序表由 native 给定（只证一致性，**不证内存/时序**，属 M3）；
+  **取指 word 未驱动执行**（x6/x7 直接注入，无译码绑定——组合为 transcript 层，语义绑定属 M3）；
+  词级/位级走不同后端（M4 vs spartan），约束数是主指标、耗时跨后端量级参考；
+  单条 add / 单地址取指，未测 64-bit 进位与乘法代价。
+- 里程碑 `designs/milestone-roadmap.md` §4 M2 状态：未开始 → **已完成**。
+
+### 里程碑 M3：通用单周期状态机（word_vm）⭐ 完成（2026-09-06，见 `M3_REPORT.md`）
+- **真正的最小单周期状态机**，闭合 M1/M2 遗留的两个语义缺口：
+  - **word 译码驱动执行**：`addi/add/beq` 从指令字经词级门提取 op/rd/rs1/rs2/imm，据译码结果选执行，
+    非"操作数直接注入"（M2 的 `word_add_combined` 只证 transcript 共享，未证译码驱动）。
+  - **寄存器 read==most-recent-write 由 logup* 强制**：读事件值经 `W[(reg, ver_at_read)]` 绑定写日志表 +
+    **版本链电路化**（`ver_{t+1}[r]=ver_t[r]+写?1:0` 为约束承载），非 native 填正确值（M1 `reg_rw` 为 native 算版本）。
+- 新增切片 `word_vm`（切片 24）：10 周期程序（`addi x1; add x2,x2,x1; addi x3; beq x3,x4,+8; beq x5,x5,-16; halt`，
+  x4=limit=2，2 次循环体），`taken/not-taken` 各 ≥1、x1/x2/x3 各被写 ≥2 次、跨指令读见最近写。
+- **单一 transcript 组合**：`frontend prove → sample(gamma) → logup* prove(取指表+写日志表) →
+  into_verifier → frontend verify → sample(gamma) → logup* verify`。
+- **4/4 soundness 真拒**：过期读（旧版本值）、版本索引篡改、非法取指、最终寄存器 public 输出篡改 → verify Err。
+- 约束（10 周期，**v2 绑定返工后**）：ZERO=127 AND=444 IMUL=0 BMUL=519（gates=1348）；约 **134.8 gate/指令**（成本∝指令数而非位宽；v1→v2 因 R1 把读/写事件 inout 化并加约束相等而上升）。
+- 测试：`cargo test -p binius-zkvm-slice` → **24 passed**（原 23 + 1）。
+- **诚实边界**：程序表/写日志表由 native 给定（logup* 只证一致性，**不证内存/时序**，属 M3 之后）；
+  固定轮数全展开（无动态循环）；x0 非硬零（8 寄存器视作真实）；单周期状态机（跨行语义经 logup* 绑定，非完整 VM 整合）。
+- 里程碑 `designs/milestone-roadmap.md` §4 M3 状态：设计决策已给（本轮按 §3 实现）→ **已完成**。
+
+### 里程碑 M4：RAM 内存论证（word_vm_ram）⭐ 完成（2026-09-06，见 `M4_REPORT.md`）
+- **在 M3 状态机上推广内存**：新增 `lw(0x03)/sw(0x23)` 译码，**K=64 字地址空间**（32-bit 字，`mem_addr = iadd_32(rs1, sext(imm)) & 0x3f`）。
+- **RAM 读值只由 logup* 钉住**（招牌）：电路**不建跨地址值链**，只维护 **64 个版本计数器**（`ver[t+1][a]=ver[t][a]+(is_store&&addr==a)`，**O(K·T) 进电路**）；值载荷全部落在 **RAM 写日志表 `W_ram[(addr,ver)]`**，读值 `ld_val` 为 public inout，由 logup* 断言 `(addr,ver,ld_val)∈W_ram`（M3 的值链被"论证"替代）。
+- **3 张 logup* 表**：fetch（m=6）+ 寄存器写日志（m=6）+ RAM 写日志（m=9），**单 transcript**。
+- **init/final/output 三件套**（验证端显式断言）：init（`W_ram[addr*VER_MAX+0]==init_mem`）、final（`fin_ver[64]` public inout 钉到版本链末端）、output（`M_final[10]==39`=累加器结果）。
+- 新增切片 `word_vm_ram`（切片 25）：28 周期程序（`lw/add/addi/sw/lw/add/addi/beq/beq/sw/halt`，x4=limit=3，mem[8]=5/mem[9]=7，OUT=mem[10]），3 次循环体、mem[8] 同地址写 3 次、跨迭代读见最近写（RAW）、≥2 地址、≥1 输出单元。
+- **5/5 soundness 真拒**：①**过期读**（LOAD 读到旧版本值 → **电路过+logup* 拒**，分层）；②版本索引篡改（inout 拒）；③越界/未初始化读非零值（→ **电路过+logup* 拒**，分层）；④初始镜像篡改（verifier init 检查拒）；⑤结果（final ver inout）篡改。
+- 约束（28 周期）：ZERO=653 AND=6902 IMUL=0 BMUL=4709（gates=12743）；约 **454.7 gate/周期**，**成本主项 = O(K·T) RAM 版本链**（64×28 计数器，与指令数无关，任务书 §2 已知边界）。
+- 测试：`cargo test -p binius-zkvm-slice` → **25 passed**（原 24 + 1）；`word_vm_ram.rs` 零警告。
+- **诚实边界**：RAM 写日志表由 native 给定（logup* 只证一致性）；**地址越界经 `& 0x3f` 掩码静默到合法地址**（未硬拒 OOB）；`VER_MAX=8`/`M_FETCH=6` 因 M4 循环 x6 写 6 次、程序地址到 0x28 而提升（`reg*VER_MAX+ver` 单索引需防碰撞 / fetch 表需覆盖 0x28）；单初始镜像、字寻址、无多地址别名检测（⚠️ 下游 M5 处理）。
+- 里程碑 `designs/milestone-roadmap.md` §4 M4 状态：设计决策已给（T1 版本链路线推广）→ **已完成**。
+
+
+### 里程碑 M5：真 RV32I 32-bit VM（word_vm32，切片 26）⭐ 完成（2026-09-07，v3，见 `M5_REPORT.md`）
+- **真 RV32I 标准编码**：30 条指令（R/I/S/B/U/J 型全套编码器）、32 寄存器（x0 硬零双钉扎）、K=64 字 RAM。
+- **torture 50 周期**全门级证明（`c_ok=l_ok=true`，48,821 gates≈977/cyc，默认 RUSTFLAGS native）；**bubblesort 391 周期端到端**（382,660 gates，native 对拍 + 三件套 8/8 交叉核对）。
+- **修复两个 soundness bug**：① is_sra/is_sub 检测位（funct7 bit5 → MSB-bool，is_sub 限 R-type）；② **S 型 store 地址**（native 与电路原来用 I 型 imm_i 计算 sw 地址、低 5 位实为 rs2——torture 的 sw(8,0,24) 恰好掩盖；bubblesort 用小偏移暴露）。
+- **VER_MAX 16→128**（bubble 循环寄存器写频 ~56）、`Trace` 加 final_mem、store 修复双侧一致；R3b 分层拒绝随 override=合法镜像新合同迁移（bubble + load-override 注入）。
+- 全量 29/29（v3）；`M5_REPORT.md` v3。
+
+### 里程碑 M6：固化库 + 测试套件 + 每指令成本基准（收官）⭐ 完成（2026-09-07，见 `M6_REPORT.md`）
+- **T1 库拆分**：`word_vm32.rs`（~1000 行单文件）拆为 `src/vm32/`：`isa.rs`（编码/解码/常量）、
+  `interp.rs`（native 解释器 + trace）、`circuit.rs`（门电路 + inout 布局）、`proof.rs`（prove/三表 logup*/verify/三件套）；
+  切片 26 变薄层（程序镜像 + run_word_vm32 + 测试）。**拆分前后逐数字一致**（bubble 382,660 gates 与 v3 报告一字不差；
+  torture 48,821 为拆分支点真值——v2 报 44,784 为 VER_MAX=16 时代旧值）；`encode.rs` 删除（`enc_add` 迁 `vm32::isa`，
+  word_add_combined 改引用，行为不变）。
+- **T2 测试套件**：per-instruction 单元测试（vm32::interp::per_inst_tests，30 指令 × 边界向量 0/1/-1/0x7FFFFFFF/0x80000000/
+  shamt 0/31/负 imm/x0 写丢弃，~160 断言，5 个 `#[test]`）；soundness 5 用例拆成独立 `#[test]`；全量 **39/39**。
+- **T3 每指令成本基准**：`bench_instruction_costs`（`#[ignore]`，N=16 微程序）产出 **31 条指令成本表**
+  —— **30/31 条 g/cyc=973 逐数字相同**（gates=22388, AND=8221, BMUL=10411, IMUL=0），jalr 975（微程序
+  为 addi+jalr 对，口径注明）。thesis"成本∝指令数、与指令类型无关"在 32-bit RV32I 上获得定量证据。
+  表与口径见 `BENCHMARKS.md`（复现：`cargo test -p binius-zkvm-slice --lib -- --ignored --nocapture bench_instruction`）。
+- **T4 文档收官**：architecture.md（26 切片证据链 + M 里程碑加注）、README（当前状态）、milestone-roadmap（M6 ✅）、
+  本文件 M6 段、crates/zkvm-slice/README（库结构 + 快/慢测试运行）。
+
 ### `zkvm.rs` 的真实状态（⚠️ 经逐行审查，非"整合主代码"）
 - `crates/zkvm-slice/src/slices/zkvm.rs` — **非"项目主代码"**，实为**逐行验证器 + 手工内存表**：
   `drive_row` 里 **`let _ = pc;`（PC 未约束）**；`row.op` 是 `run_program()` 里 **match 死的
@@ -226,7 +294,12 @@ flock 的 `CircuitBuilder` wiring 与 witness `Wiring(Gkr(ProductMismatch))` 另
      关键 API: `IPProverChannel::sample(&mut transcript)` 采样 gamma, 多表 logup*,
      Spartan `prover.prove(witness, rng, &mut transcript)`, 同 transcript 串联。
 
-## 下一步 (M-B 起, 可选)
+## 下一步（已废弃，由统一里程碑取代）
+> **勘误（2026-09-06）**：本节已被 Jolt 迁移难度分析后的统一里程碑序列取代，权威定义见
+> `designs/milestone-roadmap.md`（M1✅ 已完成 → M2 执行层选型 spike → M3 通用单周期状态机
+> → M4 RAM 内存论证 → M5 指令集/字宽 → M6 固化）。"M-B"编号废弃，不再使用。
+> 原 M2/M3 定义的问题：Jolt 的查表化执行依赖素域整数嵌入（char-2 失效）；
+> "Jolt 式 one-hot+increment"建立在被高估的 Twist↔logup* 同构上。
 1. 扩字宽到 RV32I(32-bit) 并覆盖更多指令(andi/slli), trace 用 isasim.rs。
 2. 内存参数升级为多地址置换(Spice 式/离线内存参数), 当前 mem_instr 是单地址 R-A-W。
 3. 把 11 切片固化为可复用库(crate), 接 CLI/测试套件, 做 native-vs-proof 交叉核对基准。
