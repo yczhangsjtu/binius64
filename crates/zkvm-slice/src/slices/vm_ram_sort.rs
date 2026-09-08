@@ -398,8 +398,8 @@ pub fn run_program_big(
 }
 
 /// 排序流：每触及地址（真实 + PAD_ADDR 组）init 首 + 事件升序 + final 尾。
-pub fn build_sorted(events: &[Visit]) -> Vec<Visit> {
-	let t = events.len();
+/// `final_ts`：final 行的时间戳（须大于全部事件 ts；双事件布局下 = 2T+1）。
+pub fn build_sorted_with_final(events: &[Visit], final_ts: u64) -> Vec<Visit> {
 	let mut latest: std::collections::HashMap<u64, u64> = std::collections::HashMap::new();
 	for e in events {
 		if e.kind == K_WRITE {
@@ -419,22 +419,29 @@ pub fn build_sorted(events: &[Visit]) -> Vec<Visit> {
 			sorted.push(*e);
 		}
 		let fv = *latest.get(&a).unwrap_or(&0);
-		sorted.push(Visit { addr: a, ts: t as u64 + 1, val: fv, kind: K_FINAL });
+		sorted.push(Visit { addr: a, ts: final_ts, val: fv, kind: K_FINAL });
 	}
 	sorted
 }
 
-// ---- 事件列：每周期一行（load/store/占位），事件侧重排（init + 事件 + final），排序流 ----
+/// 兼容包装：final ts = 事件数 + 1（单事件布局）。
+pub fn build_sorted(events: &[Visit]) -> Vec<Visit> {
+	build_sorted_with_final(events, events.len() as u64 + 1)
+}
+
+// ---- 事件列：每周期至多两行（M9 T2 双事件：load ts=2t、store ts=2t+1、PAD ts=2t）----
 pub fn event_rows(trace: &BigTrace) -> (Vec<Visit>, Vec<Visit>) {
-	// 事件行
-	let mut rows: Vec<Visit> = Vec::with_capacity(trace.cycles.len());
+	let mut rows: Vec<Visit> = Vec::with_capacity(2 * trace.cycles.len());
 	for (t, c) in trace.cycles.iter().enumerate() {
+		let (t0, t1) = (2 * t as u64, 2 * t as u64 + 1);
 		if let Some(ld) = &c.load {
-			rows.push(Visit { addr: ld.addr as u64, ts: t as u64, val: ld.val as u64, kind: K_READ });
-		} else if let Some(st) = &c.store {
-			rows.push(Visit { addr: st.addr as u64, ts: t as u64, val: st.val as u64, kind: K_WRITE });
-		} else {
-			rows.push(Visit { addr: PAD_ADDR, ts: t as u64, val: 0, kind: K_INIT });
+			rows.push(Visit { addr: ld.addr as u64, ts: t0, val: ld.val as u64, kind: K_READ });
+		}
+		if let Some(st) = &c.store {
+			rows.push(Visit { addr: st.addr as u64, ts: t1, val: st.val as u64, kind: K_WRITE });
+		}
+		if c.load.is_none() && c.store.is_none() {
+			rows.push(Visit { addr: PAD_ADDR, ts: t0, val: 0, kind: K_INIT });
 		}
 	}
 	// 事件侧重排：init(触达地址) + 事件行 + final(触达地址)
@@ -448,9 +455,10 @@ pub fn event_rows(trace: &BigTrace) -> (Vec<Visit>, Vec<Visit>) {
 		}
 	}
 	side.extend_from_slice(&rows);
+	let final_ts = 2 * trace.cycles.len() as u64 + 1;
 	for &a in &addrs {
 		let fv = rows.iter().rev().find(|e| e.addr == a && e.kind == K_WRITE).map(|e| e.val).unwrap_or(0);
-		side.push(Visit { addr: a, ts: trace.cycles.len() as u64 + 1, val: fv, kind: K_FINAL });
+		side.push(Visit { addr: a, ts: final_ts, val: fv, kind: K_FINAL });
 	}
 	(rows, side)
 }
@@ -747,7 +755,7 @@ pub fn run_vmrs(n: usize, tamper: Tamper, expected_hash: Option<[u64; 4]>, word_
 	assert!(trace.cycles.len() < 1_500_000);
 	let t_len = trace.cycles.len();
 	let (rows, side) = event_rows(&trace);
-	let sorted = build_sorted(&rows);
+	let sorted = build_sorted_with_final(&rows, 2 * trace.cycles.len() as u64 + 1);
 	assert_eq!(sorted.len(), side.len(), "排序流与事件侧同长");
 	let ts = sorted.len();
 	let l = (usize::BITS - ((2 * ts) - 1).leading_zeros()) as usize;
@@ -761,8 +769,10 @@ pub fn run_vmrs(n: usize, tamper: Tamper, expected_hash: Option<[u64; 4]>, word_
 	// final 输出期望（排序后最小元素）
 	let final_val = trace.final_mem[OUT_ADDR as usize] as u64;
 
+	let t_build = std::time::Instant::now();
 	let (circuit, iref) = build_circuit_vmrs(t_len, ts);
 	let stat = CircuitStat::collect(&circuit);
+	eprintln!("[phase] build_circuit+stat: {:?}", t_build.elapsed());
 	let cs = circuit.constraint_system().clone();
 	let mut w = circuit.new_witness_filler();
 	for (t, c) in trace.cycles.iter().enumerate() {
@@ -805,7 +815,9 @@ pub fn run_vmrs(n: usize, tamper: Tamper, expected_hash: Option<[u64; 4]>, word_
 		w[iref.prog_hash[i]] = Word(hash_words[i]);
 	}
 	w[iref.final_out] = Word(final_val);
+	let t_fill = std::time::Instant::now();
 	circuit.populate_wire_witness(&mut w).expect("witness fill");
+	eprintln!("[phase] witness_fill: {:?}", t_fill.elapsed());
 	let witness_vec = w.into_value_vec();
 	cs.verify(&witness_vec).expect("native verify");
 	let inout_words = witness_vec.inout().to_vec();
@@ -840,9 +852,12 @@ pub fn run_vmrs(n: usize, tamper: Tamper, expected_hash: Option<[u64; 4]>, word_
 	let prover = WordProver::<LP, StdHashSuite>::setup(verifier.clone()).expect("prover setup");
 	let alloc = GlobalAllocator;
 	let mut pt = ProverTranscript::new(StdChallenger::default());
+	let t_fprove = std::time::Instant::now();
 	prover.prove(&witness_vec, &mut pt).expect("frontend prove");
+	eprintln!("[phase] frontend_prove: {:?}", t_fprove.elapsed());
 
 	// M8-B T0：committed fetch 表 + indexed logup* 取指（M3/M5 模式，表改为 BaseFold 承诺）。
+	let t0_chan = std::time::Instant::now();
 	let merkle_scheme = BinaryMerkleTreeScheme::<LF, StdHashSuite>::new();
 	let log_inv_rate = 1;
 	let log_code_len = l + log_inv_rate;
@@ -932,6 +947,7 @@ pub fn run_vmrs(n: usize, tamper: Tamper, expected_hash: Option<[u64; 4]>, word_
 	chan.finalize_oracle(o_ts, fb_ts);
 	chan.finalize_oracle(o_kind, fb_kind);
 	chan.finish();
+	eprintln!("[phase] basefold+logup+fracadd (prover): {:?}", t0_chan.elapsed());
 
 	// ---------- verifier ----------
 	let mut vt = pt.into_verifier();
@@ -945,7 +961,9 @@ pub fn run_vmrs(n: usize, tamper: Tamper, expected_hash: Option<[u64; 4]>, word_
 	if tamper == Tamper::BadBridgeWitness {
 		inout_verify[io_d_val(t_len, ts)].0 ^= 1;
 	}
+	let t_verify = std::time::Instant::now();
 	let c_ok = verifier.verify(&inout_verify, &mut vt).is_ok();
+	eprintln!("[phase] frontend_verify+fetch(logup)+fracadd(verify): {:?}", t_verify.elapsed());
 	// 恒等式②透明检查（M8-B T1）：排序流已公开，良构断言在验证端直接检查。
 	let pub_sorted: Vec<Visit> = (0..ts)
 		.map(|j| Visit {
@@ -1102,6 +1120,17 @@ mod tests {
 		let run = run_vmrs(32, Tamper::None, Some(prog_image_hash(32)), &[]);
 		let dt = t0.elapsed().as_secs_f32();
 		show(&run, &format!("scale N=32 ({dt:.1}s)"));
+		assert!(run.sorted_ok && run.c_ok && run.l_ok && run.hash_ok);
+	}
+
+	/// M9 T0/T1：N=64（M8-A 时电路构建 OOM/SIGKILL 的规模）。
+	#[test]
+	#[ignore]
+	fn vm_ram_sort_scale64() {
+		let t0 = Instant::now();
+		let run = run_vmrs(64, Tamper::None, Some(prog_image_hash(64)), &[]);
+		let dt = t0.elapsed().as_secs_f32();
+		show(&run, &format!("scale N=64 ({dt:.1}s)"));
 		assert!(run.sorted_ok && run.c_ok && run.l_ok && run.hash_ok);
 	}
 

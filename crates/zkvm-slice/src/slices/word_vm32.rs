@@ -274,7 +274,6 @@ mod tests {
 #[cfg(test)]
 mod m8b_tests {
 	use super::*;
-	use crate::vm32::isa::*;
 	use crate::vm32::interp::run_program;
 
 	/// M8-B T2 端到端：mul/divu/rem/lb/lbu/lh/lhu/sb/sh 微程序，native 对拍 + prove→verify。
@@ -311,8 +310,11 @@ mod m8b_tests {
 		push(lbu(12, 10, 0), &mut prog, &mut at);
 		push(addi(10, 10, 2), &mut prog, &mut at); // 18
 		push(lhu(13, 10, 0), &mut prog, &mut at);
-		push(addi(10, 10, 0xffff), &mut prog, &mut at); // 17
-		// 注：sb/sh 的电路级验证需要读改写双事件展开（见报告边界），不进端到端程序。
+		push(addi(14, 0, 0x5e), &mut prog, &mut at);
+		push(addi(15, 10, 0xffff), &mut prog, &mut at); // x15 = 18-1 = 字节地址 17（字 4 字节 1）
+		push(sb(14, 15, 0), &mut prog, &mut at); // M9 T2：sb 双事件（读旧字+写新字）
+		push(addi(15, 15, 1), &mut prog, &mut at); // x15 = 18（字 4 半字 1，对齐）
+		push(sh(14, 15, 0), &mut prog, &mut at); // sh 半字 1 ← 0x005e
 		push(lhs_lw(15, 0, 4), &mut prog, &mut at); // lw 字索引 4
 		push(jal(0, 0xc4 - at), &mut prog, &mut at);
 		fn fetch_halt(_: u64) -> u64 { 0x00000073 }
@@ -327,7 +329,8 @@ mod m8b_tests {
 		assert_eq!(fr[11], 0xffff_ffa5, "lb");
 		assert_eq!(fr[12], 0x34, "lbu");
 		assert_eq!(fr[13], 0xa5c3, "lhu");
-		assert_eq!(fr[15], 0xa5c3_1234, "lw 字索引语义读回 init 值");
+				// sb 写字节 1（0x5e）、sh 写半字 1（0x005e）：mem[4] = 0x005e5e34
+		assert_eq!(fr[15], 0x005e_5e34, "sb/sh 双事件合并后 lw 读回");
 		// 端到端 prove→verify
 		let run = run_machine_full([0u32; NREG], &init, &prog, &[], fetch_halt);
 		println!("m8b isa e2e: cycles={} c_ok={} l_ok={} gates={} imul={} and={}",

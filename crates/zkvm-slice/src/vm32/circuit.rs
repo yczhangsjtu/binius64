@@ -204,8 +204,10 @@ pub fn build_circuit(trace: &Trace) -> (Circuit, InoutRefs) {
 		let is_jalr = eq_opcode(OP_JALR);
 		let is_branch = eq_opcode(OP_BRANCH);
 		let c_is_load = eq_opcode(OP_LOAD); // M8-B T2：lb/lbu/lh/lhu/lw 全家
-		let c_is_store = b.band(eq_opcode(OP_STORE), b.icmp_eq(funct3, b.add_constant_64(0x2))); // sb/sh 见报告边界
+		let c_is_store = eq_opcode(OP_STORE); // M9 T2：sb/sh/sw 全家
 		let is_byte_load = b.band(eq_opcode(OP_LOAD), b.bnot(b.icmp_eq(funct3, b.add_constant_64(0x2))));
+		// M9 T2：sb/sh（字节地址语义）——同周期「读旧字 + 写新字」双事件
+		let is_byte_store = b.band(eq_opcode(OP_STORE), b.bnot(b.icmp_eq(funct3, b.add_constant_64(0x2))));
 		let is_m_ext = b.band(is_risc, b.icmp_eq(funct7, one)); // RV32M：funct7=0x01
 
 		// read register values/versions
@@ -220,8 +222,13 @@ pub fn build_circuit(trace: &Trace) -> (Circuit, InoutRefs) {
 		let ld_word_idx = b.band(b.srl32(ld_byte_addr, 2), b.add_constant_64(0x3f));
 		// M8-B T2：lw 沿用「地址即字索引」；字节/半字 load 用 (addr>>2)&0x3f
 		let ld_addr_w = b.select(is_byte_load, ld_word_idx, b.band(b.iadd_32(rs1v, imm_i), b.add_constant_64(0x3f)));
-		let st_addr_w = b.band(b.select(c_is_store, b.iadd_32(rs1v, imm_s), b.iadd_32(rs1v, imm_i)), b.add_constant_64(0x3f)); // S-imm on store, I-imm otherwise (matches witness fallback)
-		let read_ram_ver = mux(&b, &c_ram_ver, ld_addr_w);
+		let st_byte_addr = b.iadd_32(rs1v, imm_s);
+		let st_word_from_byte = b.band(b.srl32(st_byte_addr, 2), b.add_constant_64(0x3f));
+		let st_addr_w = b.select(is_byte_store, st_word_from_byte,
+			b.band(b.select(c_is_store, b.iadd_32(rs1v, imm_s), b.iadd_32(rs1v, imm_i)), b.add_constant_64(0x3f))); // S-imm on store, I-imm otherwise (matches witness fallback)
+		// M9 T2：sb/sh 周期的读事件地址 = store 字地址（读旧字）；其余周期 = load 地址
+		let eff_ld_addr = b.select(is_byte_store, st_addr_w, ld_addr_w);
+		let read_ram_ver = mux(&b, &c_ram_ver, eff_ld_addr);
 		let st_ram_ver = mux(&b, &c_ram_ver, st_addr_w);
 		let store_new_ver = b.iadd(st_ram_ver, one).0;
 
@@ -354,8 +361,20 @@ pub fn build_circuit(trace: &Trace) -> (Circuit, InoutRefs) {
 		prev_pc = next_pc;
 
 		// R1: pin read / write / load / store event inouts to the circuit wires
+		// M9 T2：sb/sh 的合并字 = f(旧字=ld_val[t], rs2, off)——电路可算（旧字经 RAM 论证钉住）
+		let sb_off = b.band(st_byte_addr, b.add_constant_64(3));
+		let sb_shift = b.sll32(sb_off, 3);
+		let sb_mask = shl_var(&b, b.add_constant_64(0xff), sb_shift);
+		let sb_ins = shl_var(&b, b.band(rs2v, b.add_constant_64(0xff)), sb_shift);
+		let sb_merged = b.bor(b.band(ld_val[t], b.bnot(sb_mask)), sb_ins);
+		let sh_shift = b.sll32(b.band(b.srl32(sb_off, 1), one), 4);
+		let sh_mask = shl_var(&b, b.add_constant_64(0xffff), sh_shift);
+		let sh_ins = shl_var(&b, b.band(rs2v, b.add_constant_64(0xffff)), sh_shift);
+		let sh_merged = b.bor(b.band(ld_val[t], b.bnot(sh_mask)), sh_ins);
+		let byte_store_merged = b.select(b.icmp_eq(funct3, b.add_constant_64(F3_SB)), sb_merged, sh_merged);
 		let is_alu_write_01 = b.select(is_alu_write, one, zero);
-		let is_load_01 = b.select(c_is_load, one, zero);
+		let eff_load = b.bor(c_is_load, is_byte_store); // sb/sh 周期的读旧字事件
+		let is_load_01 = b.select(eff_load, one, zero);
 		let is_store_01 = b.select(c_is_store, one, zero);
 		let rd_ver_now = mux(&b, &cur_ver, rd);
 		let rd_ver_after = rd_ver_now; // cur_ver already updated to post-write state
@@ -369,12 +388,12 @@ pub fn build_circuit(trace: &Trace) -> (Circuit, InoutRefs) {
 		b.assert_eq(format!("wr_ver[{t}]"), wr_ver[t], rd_ver_after);
 		b.assert_eq(format!("wr_val[{t}]"), wr_val[t], wb);
 		b.assert_eq(format!("wr_iswrite[{t}]"), wr_iswrite[t], is_alu_write_01);
-		b.assert_eq(format!("ld_addr[{t}]"), ld_addr[t], ld_addr_w);
+		b.assert_eq(format!("ld_addr[{t}]"), ld_addr[t], eff_ld_addr);
 		b.assert_eq(format!("ld_ver[{t}]"), ld_ver[t], read_ram_ver);
 		b.assert_eq(format!("is_load[{t}]"), is_load[t], is_load_01);
 		b.assert_eq(format!("st_addr[{t}]"), st_addr[t], st_addr_w);
 		b.assert_eq(format!("st_ver[{t}]"), st_ver[t], store_new_ver);
-		b.assert_eq(format!("st_val[{t}]"), st_val[t], rs2v);
+		b.assert_eq(format!("st_val[{t}]"), st_val[t], b.select(is_byte_store, byte_store_merged, rs2v));
 		b.assert_eq(format!("is_store[{t}]"), is_store[t], is_store_01);
 	}
 

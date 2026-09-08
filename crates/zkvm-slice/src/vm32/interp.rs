@@ -53,7 +53,7 @@ pub fn run_program(init_mem: &[u32; NRAM], word_overrides: &[(u64, u64)], load_o
 		let a = regs[rs1 as usize] as i64 as u64 & 0xffffffff;
 
 		let addr_calc = ((a.wrapping_add(imm_i as u64)) & 0xffffffff) as u64;
-		let mem_addr = (addr_calc % NRAM as u64) as usize;
+		let mut mem_addr = (addr_calc % NRAM as u64) as usize;
 
 				let mut load = None;
 		let mut store = None;
@@ -83,13 +83,15 @@ pub fn run_program(init_mem: &[u32; NRAM], word_overrides: &[(u64, u64)], load_o
 			for &(cyc, ov) in load_overrides { if cyc == cycles.len() { val = ov; } }
 			load = Some(MemAccess { addr: mem_addr, ver: v, val });
 		} else if opcode == OP_STORE && matches!(funct3, F3_SB | F3_SH) {
-			// S-type sign-extended offset (imm_s, at inst[31:25]+inst[11:7]) — NOT imm_i, whose
-			// low 5 bits alias rs2 (this was a latent S-type store-address bug before R5).
+			// M9 T2：sb/sh 展开为「读旧字 + 写新字」双事件（同周期 load+store）。
+			// 读事件走 RAM 论证的读语义（ver=v），写事件 ver=v+1——版本链与 val_cons
+			// （同地址读值一致链：旧字读行 → 新字写行）无需修改排序论证。
 			let st_addr = (a.wrapping_add(imm_s as u64)) & 0xffffffff;
 			let st_wi = byte_word_index(st_addr);
-			let v = ramver[st_wi] + 1;
-			let off = (st_addr & 3) as u32;
+			let v_old = ramver[st_wi];
 			let old = mem[st_wi];
+			let v_new = v_old + 1;
+			let off = (st_addr & 3) as u32;
 			let rs2v = regs[rs2 as usize];
 			let merged = match funct3 {
 				F3_SB => {
@@ -102,7 +104,9 @@ pub fn run_program(init_mem: &[u32; NRAM], word_overrides: &[(u64, u64)], load_o
 				}
 				_ => unreachable!(),
 			};
-			store = Some(MemAccess { addr: st_wi, ver: v, val: merged });
+			load = Some(MemAccess { addr: st_wi, ver: v_old, val: old });
+			store = Some(MemAccess { addr: st_wi, ver: v_new, val: merged });
+			mem_addr = st_wi;
 		} else if opcode == OP_STORE && funct3 == 0x2 {
 			let st_addr = (a.wrapping_add(imm_s as u64)) & 0xffffffff;
 			let mem_addr = (st_addr % NRAM as u64) as usize;

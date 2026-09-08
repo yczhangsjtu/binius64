@@ -7,6 +7,23 @@
 > 全门级 prove + 三表 logup* + verify（全部 `c_ok=true l_ok=true`），记录 CircuitStat 与耗时。
 > 复现：`cargo test -p binius-zkvm-slice --lib -- --ignored --nocapture bench_instruction`。
 
+## M9：release 缩放曲线（thesis 最终定量证据，2026-09-08）
+
+> `--release` + RUSTFLAGS=native，串行单进程。复现：`cargo test --release -p binius-zkvm-slice
+> --lib vm_ram_sort -- --include-ignored --nocapture --test-threads=1`。
+
+| N | T（周期） | gates | prove 时间 | g/cyc | 峰值内存 |
+|---|---|---|---|---|---|
+| 16 | 1,801 | 905,168 | 1.1s | 502.6 | — |
+| 32 | 6,973 | 3,502,632 | 4.5s | 502.3 | — |
+| 64 | 27,343 | 13,730,612 | 18.1s | 502.2 | 8.88 GB |
+
+- **gates 严格线性**（502.3±0.2 门/周期，方差 0.04%）；prove_time 拟合指数 ≈1.03（近线性）。
+- 每指令成本 release 版：31 条指令 **1113-1115 g/cyc 统一**（M6 的 973 + M8-B/M9 的
+  M 族断言与 sb/sh 每周期固定门）——成本与指令类型无关在 39 条 ISA 下成立。
+- 阶段 profile（release N=32）：build_circuit 2.88s（64%）＞ frontend_prove 0.50s（11%）
+  ＞ BaseFold/logup/fracadd 72ms ＞ witness_fill 12ms——瓶颈在电路构建（详见 M9_REPORT T3）。
+
 ## M8-B 增补（2026-09-08）：新增 ISA 行 + fetch/桥的公开列开销
 
 > 复现：`cargo test -p binius-zkvm-slice --lib word_vm32_m8b -- --nocapture`。

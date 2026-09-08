@@ -82,7 +82,7 @@ M4 的版本链把 64 个计数器放进电路（O(K·T) gates），K=2^20 时�
 | **M7** | **可扩展 RAM 论证 spike**：路线 A（排序式）与路线 B（Twist 翻译）各一切片，K=2^16、T≥2^12 | 两路线的 gates/prove-time 随 K、T 缩放实测曲线；明确选型 + 报告 | **✅ 已完成（2026-09-08，v2）**：路线 A 胜（切片 27 `ram_sort`）；gates 与 K 完全无关（0 方差）、随 T 线性（×3.93）；fracaddcheck 自组装值多重集合等式；`M7_REPORT.md` |
 | **M8-A** | **VM × RAM 论证整合 + 强承诺通道**（M8 上半）：ram_sort 迁移 BaseFold 通道；vm32 执行核心 + 排序式 RAM 论证接入（删 O(K·T) 版本链）；恒等式②强绑定；K=2^16 | 强通道证据；排序端到端（记录规模）；4 例 verify 层 soundness | **✅ 已完成（2026-09-08，待验收）**：切片 28 `vm_ram_sort`；零 naive 残留（BaseFold 通道两切片同型）；N=16 主测（1801 周期 / 905k gates / 1.9s）+ N=32 缩放点（T×3.87→gates×3.87 线性）；恒等式②按任务书 §2.3 降级授权采用 intmul phase5 式 witness 列方案（跨行比较在 quadratic mlecheck 不可表达；leaf-claim 桥列边界）；1024 字排序 O(N²) 不可达（外推 ≥5×10⁹ 门，§2.5 授权记录规模）；`M8_REPORT.md` |
 | **M8-B** | **完整 ISA + 真实工具链**（M8 下半）：mul/div/字节访存/ecall 最小 I/O；riscv32 工具链编译 C/Rust → ELF → tracer → trace；跑真实编译程序 | 编译的 C 程序端到端 prove→verify；与参考模拟器逐指令对拍 | **✅ 已完成（2026-09-08）**：T0 fetch 公开化（committed 表 + 公开哈希 + SwapProgram 拒）、T1 leaf-claim 桥（公开列 + 重算对照）、T2 ISA（mul/div/rem/字节访存 9 条）；T3 工具链停项（本机无 riscv32 工具链，HANDOFF_M8B.md）；`M8B_REPORT.md`。遗留：sb/sh 电路层、succinctness 边界（verifier 线性）→ M9 |
-| **M9** | **性能工程**：release 基准、witness 生成优化、并行化；产出"成本 vs 指令数"缩放曲线（thesis 的最终定量证据） | T=2^10..2^20 的 prove 时间/gates 曲线；每指令成本表（release） | M8 |
+| **M9** | **性能工程**：release 基准、witness 生成优化、并行化；产出"成本 vs 指令数"缩放曲线（thesis 的最终定量证据） | T=2^10..2^20 的 prove 时间/gates 曲线；每指令成本表（release） | **✅ 已完成（2026-09-08，待验收）**：N=64 跑通（8.88GB 峰值，OOM=环境性）；release 曲线 gates 严格线性 502.3 门/周期、prove≈线性（T×15.2→×16.5）；31 指令 release 成本表 1113 g/cyc 统一；sb/sh 双事件电路层；profile 定位瓶颈=电路构建（`M9_REPORT.md`） |
 | **M10** | **工程化收官**：库 API 化（prove(program, input)→proof）、CI、文档、安全审查准备 | 外部调用者可 API 驱动；文档完整 | M9 |
 
 > 注（2026-09-08）：M8 按关键路径拆为 M8-A（RAM 论证整合 + 强通道，协议风险集中于此）
@@ -106,4 +106,4 @@ M4 的版本链把 64 个计数器放进电路（O(K·T) gates），K=2^20 时�
 - `designs/milestone-roadmap.md`（M1-M6）保持不变，标记为 Phase 1（切片验证）。
 - M7-M10 的任务书在各自启动时生成（同 M2-M6 模式：Leader 写任务书 → Worker 实现 →
   Leader 验收）。
-- 当前状态（2026-09-08）：M1-M7 + M8-A ✅；M8-B ◐（T0-T2 ✅ 待验收 `M8B_REPORT.md`；T3 工具链停项待外部依赖）。
+- 当前状态（2026-09-08）：M1-M7 + M8-A ✅；M8-B ◐（T0-T2 ✅，T3 待工具链）；M9 ✅ 待验收（`M9_REPORT.md`）。
