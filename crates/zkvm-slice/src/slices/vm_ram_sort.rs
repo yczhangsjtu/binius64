@@ -1178,9 +1178,14 @@ fn vmrs_prove_impl(
 	let l_pow2 = 1usize << big_l;
 	let nrows = l_pow2;
 
+	// M13 根因修复：协议不变量「inst pad = ECALL = prog_table[pad_slot]」必须按构造成立。
+	// 注入镜像可能长于 2^mp（ELF 单 PT_LOAD 覆盖 .text+.sdata 间隙时，parse_elf32 的
+	// img.text 含零填充词，覆盖 resize 的 ecall 填充——fib 形状 completeness 缺口根因）。
+	let pad_slot = (1u64 << mp) - 1;
 	let prog_table = {
 		let mut t = image_for_table;
 		t.resize(l_pow2, ECALL);
+		t[pad_slot as usize] = ECALL;
 		t
 	};
 	// 公开程序哈希 = 规范镜像（2^mp 槽）的哈希，与 oracle 列的 2^l pad 无关
@@ -1233,7 +1238,6 @@ fn vmrs_prove_impl(
 		col_ts[ts + j] = side[j].ts; col_kind[ts + j] = side[j].kind;
 	}
 	// inst 列：pad = ecall；pc 列 = 槽号（pc>>2），pad = 最大槽号（fetch looker 的 index pad 一致）
-	let pad_slot = (1u64 << mp) - 1;
 	let mut col_inst = vec![ECALL; l_pow2];
 	let mut col_pc = vec![pad_slot; l_pow2];
 	for (t, c) in trace.cycles.iter().enumerate() {
@@ -1780,11 +1784,9 @@ mod tests {
 		let proof_fib = vmrs_prove_with_init(16, Some(&text_fib), &init_mem, 0x400 >> 2);
 		let v_wrong = vmrs_verify(&proof_fib, Some(proof.prog_hash));
 		assert!(!v_wrong.hash_ok, "不同编译产物的哈希对照必须拒绝");
+		// M13 修复后：fib 端到端恢复（根因 = pad 槽 ECALL 不变量被长镜像破坏，见 M13_REPORT）
 		let v_right = vmrs_verify(&proof_fib, Some(proof_fib.prog_hash));
-		// 已知边界（M12 如实记录）：fib 形状（T=65/ts=68）的诚实证明在 finish 层被拒
-		// （completeness 缺口，非 soundness：仪器化比对确认双方全部 relation claim 一致、
-		// 挑战流对齐）。哈希对照（上一断言）不受影响。根因转后续调查。
-		let _ = v_right;
+		assert!(v_right.c_ok && v_right.l_ok, "fib 端到端（同 init）必须通过");
 
 		// soundness（M12 形态）：篡改公开 χ-dot 声明词 → 电路断言拒
 		let hash_main = proof.prog_hash;
@@ -1905,3 +1907,4 @@ mod scratch_small {
 		assert!(v.c_ok && v.l_ok && v.s_ok);
 	}
 }
+

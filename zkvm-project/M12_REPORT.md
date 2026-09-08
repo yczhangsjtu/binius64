@@ -196,7 +196,10 @@ M11 F4 在 vm_ram_sort 侧的残余弱化——原仅 vm32 电路有 HALT 断言
 - M11_F2_SKIP 环境变量门控：随 fetch 重构**删除**（位置绑定现在是结构性的 oracle
   relation，无条件激活）。
 
-### 3.9 如实声明：fib 形状 completeness 缺口（未解，转后续）
+### 3.9 如实声明：fib 形状 completeness 缺口（~~未解~~ → **M13 已修复**，见 M13_REPORT.md）
+> **M13 更新**：根因 = fetch 表 pad 槽「prog_table[pad_slot] == ECALL」不变量未被构造
+> 保证（fib 镜像 1036 词 > 2^mp，ELF 零间隙词覆盖 ecall 填充）。修复 = 构造表后显式
+> `prog_table[pad_slot] = ECALL`；fib 端到端已恢复全绿。以下为 M12 时的原始记录：
 - 现象：fib 微程序（T=65/ts=68/L=11）的**诚实**证明在 `finish`（组合开点）报
   InvalidAssert → l_ok=false（c_ok 亦因单流 transcript 失配）。
 - 已排除：维度不一致（全部统一 big_l）、挑战流失配（χ/γ/ρ/c 逐值比对一致）、

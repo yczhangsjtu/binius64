@@ -52,9 +52,13 @@
     `vm32/elf.rs`；非 4 对齐 vaddr 段**显式拒绝**（M12-T3；折叠错位风险的边界声明形态）。
 14. **统一 oracle 长度 L = max(l, mp, L_FLOOR=11)**（M12）：batched opening 在过小域上
     触及 GaoMateer 基底边界（上游）；pad 行零值/ecall，成本可忽略。
-15. **fib 形状 completeness 缺口（M12 未解）**：fib 微程序（T=65/ts=68）的诚实证明在
-    finish 层被拒（InvalidAssert）——非 soundness（攻击仍被拒），主测程序全绿；
-    排查记录见 M12_REPORT §3.9，转后续。
+15. **fib 形状 completeness 缺口——✅ 已修复（M13）**：根因 = fetch 表 pad 槽协议不变量
+    「prog_table[pad_slot] == ECALL」未被构造性保证——注入镜像长于 2^mp 时（fib.elf 的
+    单 PT_LOAD 覆盖 .text→.sdata 间隙，img.text 含零填充词），槽内为 ELF 原始零而非
+    ECALL，e-relation（instOracle pad == 表 pad）失配 → finish 的 Phase A 终检拒绝。
+    修复：`vmrs_prove_impl` 构造表后显式 `prog_table[pad_slot] = ECALL`（一行，按构造成立）。
+    fib 端到端 honest prove→verify 恢复（`vm_ram_sort_elf_bubble16_e2e` 内 v_right 断言
+    解除弱化）。排查全程见 M13_REPORT.md。
 16. **四标志不再逐层隔离（M12）**：transcript 为单流且 frontend 段在最后——l 层篡改
     （finish 失败）使 frontend 段失配，c_ok 可能同为 false。任何标志 false 即拒绝
     （soundness 不受影响），仅诊断隔离性下降。
