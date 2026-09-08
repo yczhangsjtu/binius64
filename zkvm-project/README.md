@@ -23,7 +23,7 @@ multiplication). The project thesis: **proving cost scales with the number of
 instructions, not the instruction type** — hashes and bit-ops cost ~nothing on
 a binary field, unlike prime-field SNARKs where bigint/ECDSA dominates.
 
-## The 26 validation slices
+## The 28 validation slices
 
 Each slice is a minimal, end-to-end `prove → verify` (+ a soundness rejection)
 demonstrating one zkVM mechanism on a binary field. Slices live under
@@ -58,18 +58,27 @@ demonstrating one zkVM mechanism on a binary field. Slices live under
 | 24 | `word_vm` | **generic single-cycle state machine** — word-driven decode (addi/add/beq) + register read==most-recent-write via logup* + **version chain circuitized** + PC advance, 10-cycle multi-instruction program, ONE transcript — M3 | combined (M4 frontend + logup*) | ⭐ |
 | 25 | `word_vm_ram` | **RAM memory argument** — K=64-word lw/sw on the M3 state machine; RAM read value pinned ONLY by logup* (no cross-address value chain), 64-version-counter chain circuitized (O(K·T)); 3-table logup* (fetch+reg-wlog+ram-wlog) in ONE transcript; init/final/output checks — M4 | combined (M4 frontend + logup*) | ⭐ |
 | 26 | `word_vm32` | **true RV32I subset, 32-bit word width** — standard I/S/B/U/J encodings + sign-extended immediates, 32 registers (x0 hard-zero), K=64 RAM, on a full 30-instruction gate-level ALU (add/sub/sll/slt/sltu/xor/srl/sra/or/and + addi/slti/sltiu/xori/ori/andi/slli/srli/srai + lui/auipc/jal/jalr + lw/sw + 6 branch conditions) — M5 | combined (M4 frontend + logup*) | ⭐ |
+| 27 | `ram_sort` | **sorted offline memory checking** — fracaddcheck multiset equality (fingerprint addr+ρ·val+ρ²·ts+ρ³·kind) over 4 committed columns; gates independent of K, linear in T; **BaseFold strong channel** — M7/M8-A | fracaddcheck + BaseFold | ⭐ |
+| 28 | `vm_ram_sort` | **real VM × scalable RAM argument** — vm32-semantics RV32I execution + sorted RAM argument (O(K·T) version chain **deleted**), K=2^16 words; event/sorted columns BaseFold-committed, ONE transcript; bubblesort end-to-end prove→verify + init/final/output; N=16: 1801 cyc, 905k gates, 1.9s — M8-A | combined (frontend + fracaddcheck + BaseFold) | ⭐ |
 
 > 注：`full_vm` 家族（16-18）**有跨行状态绑定**（`x1`/`i`/`pc` 的 `[t+1]`），局限性在执行
 > 模板化（无真正指令译码/寄存器堆）+ 内存时序为手工填值；仅 `zkvm`（20）**无跨行**（PC 未
 > 约束）。见 `ACCEPTANCE_BASIS.md` / `ACCEPTANCE_REPORT.md`。
 
 
-## Current state (2026-09-07, M1-M6 complete — project closed out)
+## Current state (2026-09-08, M1-M7 + M8-A complete; Phase 2 in progress)
 
-- **All six milestones are ✅ complete** (see `designs/milestone-roadmap.md` §4 and the
-  M1..M6 reports). Slices 24-26 (`word_vm` / `word_vm_ram` / `word_vm32`) form the modern
-  evidence chain: generic single-cycle state machine → RAM memory argument → true RV32I
-  32-bit VM with bubblesort end-to-end.
+- **Phase 1 (M1-M6) ✅** (see `designs/milestone-roadmap.md` §4 and the M1..M6 reports).
+  Slices 24-26 (`word_vm` / `word_vm_ram` / `word_vm32`) form the modern evidence chain:
+  generic single-cycle state machine → RAM memory argument → true RV32I 32-bit VM with
+  bubblesort end-to-end.
+- **Phase 2 (M7-M10)** (see `designs/binary-zkvm-full-roadmap.md`):
+  **M7 ✅** — scalable RAM argument, sorted offline memory checking, slice 27 (`ram_sort`),
+  gates independent of K / linear in T (`M7_REPORT.md`).
+  **M8-A ✅** — slice 28 (`vm_ram_sort`): VM × RAM argument integration on the **BaseFold
+  strong commitment channel**, O(K·T) version chain deleted, K=2^16 words, bubblesort
+  end-to-end prove→verify + 4 verify-layer soundness rejections (`M8_REPORT.md`).
+  Next: M8-B (full ISA + riscv32 toolchain + compiled programs).
 - **Thesis evidence**: `zkvm-project/BENCHMARKS.md` — per-instruction cost table for all
   31 RV32I instructions (N=16 micro-programs, full prove+verify): **30/31 rows identical
   (gates=22388, g/cyc=973)**; instruction type does not affect per-cycle cost.
@@ -80,9 +89,11 @@ demonstrating one zkVM mechanism on a binary field. Slices live under
   1. Fixed/unrolled programs (no dynamic loop bound in-circuit);
   2. fetch / reg-wlog / ram-wlog tables are native-provided — logup* proves consistency
      (claim ∈ table), version chains in-circuit enforce most-recent-write semantics from M3 on;
-  3. O((32+64)·T) version-chain cost dominates (VER_MAX=128);
-  4. word addressing (no byte/alignment), RAM size K=64, address OOB silently masked to &0x3f;
-  5. `mul` (RV32M) not integrated.
+     slice 28 replaces the RAM wlog with the sorted argument (fetch argument still omitted);
+  3. ~~O((32+64)·T) version-chain cost dominates~~ → **solved in M8-A for RAM** (sorted
+     argument, gates independent of K); register version chain (32 regs) remains in-circuit by design;
+  4. word addressing (no byte/alignment), address OOB silently masked to &0xffff (K=2^16, slice 28);
+  5. `mul` (RV32M) not integrated (→ M8-B).
 
 ## Building & running
 
@@ -92,10 +103,13 @@ the slices as tests:
 ```bash
 export RUSTFLAGS="-C target-cpu=native"   # i5-12400F: AVX2, no AVX-512
 CARGO_BUILD_JOBS=4                         # avoid OOM on 12-core/32GB
-cargo test -p binius-zkvm-slice            # runs all 26 slice tests
+cargo test -p binius-zkvm-slice            # runs all slice tests (53 + 3 ignored)
 # single slice, e.g. factorial:
 cargo test -p binius-zkvm-slice --lib factorial
 ```
+
+Note: use the rustup toolchain (rust-toolchain.toml pins 1.97.1; ensure `~/.cargo/bin`
+precedes `/usr/bin` in PATH — the system cargo 1.75 cannot parse the workspace manifests).
 
 ## Rounding out
 

@@ -29,10 +29,15 @@ use binius_field::arch::{OptimalB128, OptimalPackedB128};
 use binius_field::Field;
 use binius_frontend::{Circuit, CircuitBuilder, CircuitStat, Wire};
 use binius_hash::StdHashSuite;
-use binius_iop::channel::naive::NaiveVerifierChannel;
+use binius_iop::merkle_tree::BinaryMerkleTreeScheme;
+use binius_iop::fri::{ConstantArityStrategy, calculate_n_test_queries};
+use binius_iop::basefold::channel::BaseFoldVerifierChannel;
+use binius_iop::basefold::compiler::BaseFoldVerifierCompiler;
 use binius_iop::channel::{IOPVerifierChannel, OracleSpec};
-use binius_iop_prover::channel::naive::NaiveProverChannel;
+use binius_iop::merkle_channel::VerifierMerkleTranscriptChannel;
+use binius_iop_prover::basefold::compiler::BaseFoldProverCompiler;
 use binius_iop_prover::channel::IOPProverChannel;
+use binius_iop_prover::merkle_channel::ProverMerkleTranscriptChannel;
 use binius_ip::channel::IPVerifierChannel;
 use binius_ip::fracaddcheck;
 use binius_ip::fracaddcheck::FracAddEvalClaim;
@@ -41,9 +46,12 @@ use binius_ip_prover::fracaddcheck::fraction::Fraction;
 use binius_ip_prover::fracaddcheck::FracAddCircuit;
 use binius_math::multilinear::eq::{eq_ind, eq_ind_partial_eval_in};
 use binius_math::FieldBuffer;
+use binius_math::ntt::NeighborsLastMultiThread;
+use binius_math::ntt::domain_context::GaoMateerPreExpanded;
 use binius_prover::Prover as WordProver;
-use binius_transcript::ProverTranscript;
+use binius_transcript::{ProverTranscript, VerifierTranscript};
 use binius_verifier::config::StdChallenger;
+use rand::{SeedableRng, rngs::StdRng};
 use binius_verifier::Verifier as WordVerifier;
 
 pub type LF = OptimalB128;
@@ -362,9 +370,27 @@ pub fn run_ram_sort(k_bits: usize, t: usize, seed: u64, mutate: Mutate, tamper: 
 	let mut pt = ProverTranscript::new(StdChallenger::default());
 	prover.prove(&witness_vec, &mut pt).expect("frontend prove");
 
-	// T0：oracle specs（4 列，各 2^l）。
+	// T0（M8-A）：oracle specs（4 列，各 2^l）+ BaseFold 强承诺通道。
 	let specs = vec![OracleSpec { log_msg_len: l, is_zk: false }; 4];
-	let mut chan = NaiveProverChannel::<LF, _>::new(&mut pt, specs.clone());
+	let merkle_scheme = BinaryMerkleTreeScheme::<LF, StdHashSuite>::new();
+	let log_inv_rate = 1;
+	let security_bits = 100;
+	let log_code_len = l + log_inv_rate;
+	let arity =
+		ConstantArityStrategy::with_optimal_arity::<LF, _>(&merkle_scheme, log_code_len).arity;
+	let n_test_queries = calculate_n_test_queries(security_bits, log_inv_rate);
+	let verifier_compiler = BaseFoldVerifierCompiler::new(
+		&merkle_scheme,
+		specs.clone(),
+		log_inv_rate,
+		n_test_queries,
+		&ConstantArityStrategy::new(arity),
+	);
+	let domain = GaoMateerPreExpanded::<LF>::generate(log_code_len);
+	let ntt = NeighborsLastMultiThread::new(domain, 1);
+	let prover_compiler = BaseFoldProverCompiler::from_verifier_compiler(&verifier_compiler, ntt);
+	let merkle_chan = ProverMerkleTranscriptChannel::<&mut ProverTranscript<StdChallenger>, StdChallenger, LF, StdHashSuite>::new(&mut pt);
+	let mut chan = prover_compiler.create_channel(merkle_chan, StdRng::from_seed([0u8; 32]), GlobalAllocator);  // is_zk=false: RNG 不读，固定种子
 	let o_addr = chan.send_oracle(fb_addr.as_view());
 	let o_val = chan.send_oracle(fb_val.as_view());
 	let o_ts = chan.send_oracle(fb_ts.as_view());
@@ -429,6 +455,8 @@ pub fn run_ram_sort(k_bits: usize, t: usize, seed: u64, mutate: Mutate, tamper: 
 	chan.finalize_oracle(o_val, fb_val);
 	chan.finalize_oracle(o_ts, fb_ts);
 	chan.finalize_oracle(o_kind, fb_kind);
+	// BaseFold 强通道：全部 relation 排队后一次批量开口（FRI）。
+	chan.finish();
 
 	// ---------- verifier ----------
 	let mut vt = pt.into_verifier();
@@ -442,7 +470,8 @@ pub fn run_ram_sort(k_bits: usize, t: usize, seed: u64, mutate: Mutate, tamper: 
 	};
 	let c_ok = verifier.verify(&inout_verify, &mut vt).is_ok();
 
-	let mut vchan = NaiveVerifierChannel::<LF, _>::new(&mut vt, &specs);
+	let merkle_veri = VerifierMerkleTranscriptChannel::<&mut VerifierTranscript<StdChallenger>, StdChallenger, LF, StdHashSuite>::new(&mut vt);
+	let mut vchan = BaseFoldVerifierChannel::new(merkle_veri, &specs, verifier_compiler.fri_params());
 	let v_o_addr = vchan.recv_oracle(l, false);
 	let v_o_val = vchan.recv_oracle(l, false);
 	let v_o_ts = vchan.recv_oracle(l, false);
@@ -455,7 +484,7 @@ pub fn run_ram_sort(k_bits: usize, t: usize, seed: u64, mutate: Mutate, tamper: 
 		vroot_den += LF::ONE;
 	}
 
-	let l_ok = (|vchan: &mut NaiveVerifierChannel<'_ , LF, StdChallenger>| -> bool {
+	let l_ok = (|vchan: &mut BaseFoldVerifierChannel<'_, LF, _>| -> bool {
 		let vfinal = match fracaddcheck::verify::<LF, _>(
 			l,
 			FracAddEvalClaim { num_eval: LF::ZERO, den_eval: vroot_den, point: Vec::new() },
@@ -513,7 +542,14 @@ pub fn run_ram_sort(k_bits: usize, t: usize, seed: u64, mutate: Mutate, tamper: 
 			kind_r,
 		);
 		ok_addr.is_ok() && ok_val.is_ok() && ok_ts.is_ok() && ok_kind.is_ok()
-	})(&mut vchan);
+	})(&mut vchan)
+		&& match vchan.finish() {
+			Ok(_) => true,
+			Err(e) => {
+				eprintln!("basefold finish: {e:?}");
+				false
+			}
+		};
 
 	RamSortRun { c_ok, l_ok, stat, ts, l, inout_words, prover, verifier, witness: witness_vec }
 }

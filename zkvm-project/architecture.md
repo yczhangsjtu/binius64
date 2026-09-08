@@ -117,6 +117,8 @@
 | 24 | `word_vm` | **通用单周期状态机**（⭐ M3：word 译码驱动 + 32 寄存器值/版本双链电路化 + 写日志 logup*） | combined | 10 cyc, gates=1348, 4/4 拒 |
 | 25 | `word_vm_ram` | **RAM 内存论证**（⭐ M4：lw/sw + K=64 + 64 版本计数器 O(K·T) + 三表 logup* + 三件套） | combined | 28 cyc, gates=12743, 5/5 拒 |
 | 26 | `word_vm32` | **真 RV32I 32 位 VM**（⭐ M5/M6：30 指令标准编码、32 寄存器、S 型 store 地址修复、bubblesort 端到端、`vm32/` 库化；详见 M5/M6 报告） | combined | 50 cyc 48,821 gates / bubble 391 cyc 382,660 gates, 5/5 拒 |
+| 27 | `ram_sort` | **排序式离线内存检查**（⭐ M7/M8-A：fracaddcheck 多重集合等式 + 4 committed 列，gates 与 K 无关随 T 线性；迁 BaseFold 强通道；详见 `M7_REPORT.md`） | fracaddcheck + BaseFold | T=2^10: 81,880 gates 0.2s, 9/9 |
+| 28 | `vm_ram_sort` | **真 VM × 可扩展 RAM 论证**（⭐ M8-A：vm32 语义执行 + 排序式 RAM 论证，O(K·T) 版本链**删除**，K=2^16 字；全列 BaseFold 承诺单 transcript；bubblesort 端到端 + 三件套；详见 `M8_REPORT.md`） | combined (frontend + fracaddcheck + BaseFold) | N=16: 1801 cyc 905k gates 1.9s, 4/4 verify 层拒 |
 
 ### 3.1 核心里程碑（诚实分级）
 - **切片 8（阶乘）⭐ 真正实现**：三要素（分支+多指令+整数乘法）合一，且有**跨行状态迁移**，
@@ -147,6 +149,12 @@
   每指令成本基准。各切片详细报告见 `M3_REPORT.md`/`M4_REPORT.md`/`M5_REPORT.md`/`M6_REPORT.md`，
 
   里程碑总览见 `designs/milestone-roadmap.md`。
+
+- **切片 27/28（M7/M8-A）⭐ Phase 2 证据链**：M7 落地排序式离线内存检查（fracaddcheck 多重集合
+  等式，**gates 与地址空间 K 完全无关、随 T 线性**——解掉 M4 遗留的 O(K·T) 版本链底噪）；
+  M8-A 把它接入真实状态机 VM（切片 28：vm32 语义执行 + K=2^16 字 RAM + 事件列钉扎）并
+  迁移到 **BaseFold 强承诺通道**（零 naive 残留）。详见 `M7_REPORT.md`/`M8_REPORT.md`，
+  Phase 2 总览见 `designs/binary-zkvm-full-roadmap.md`。
 
 - **切片 16-20（full_vm/zkvm 演示家族）⚠️ 已被 M3-M5 超越**：其"读见最近写手工填表"等局限在
 

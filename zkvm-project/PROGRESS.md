@@ -99,6 +99,29 @@
 - **T4 文档收官**：architecture.md（26 切片证据链 + M 里程碑加注）、README（当前状态）、milestone-roadmap（M6 ✅）、
   本文件 M6 段、crates/zkvm-slice/README（库结构 + 快/慢测试运行）。
 
+### 里程碑 M7：可扩展 RAM 论证 spike ⭐ 完成（2026-09-08，见 `M7_REPORT.md`；本条为 M8-A 会话补录）
+- **路线 A 胜**（排序式离线内存检查）：切片 27 `ram_sort`——fracaddcheck 自组装值多重集合等式
+  （指纹 addr+ρ·val+ρ²·ts+ρ³·kind），4 committed 列；**gates 与 K 完全无关（0 方差）、随 T 线性（×3.93）**。
+- soundness 8 例（prover 数据 4 + verify 层 4，M7 v2 纪律）；全量 48/48。Phase 2 起点，
+  详见 `M7_REPORT.md` 与 `designs/binary-zkvm-full-roadmap.md`。
+
+### 里程碑 M8-A：VM × 可扩展 RAM 论证整合 + BaseFold 强承诺通道 ⭐ 完成（2026-09-08，见 `M8_REPORT.md`）
+- **T0 通道迁移（checkpoint）**：`ram_sort` 迁 BaseFold 强承诺通道（`BaseFoldProverCompiler`/
+  `ProverMerkleTranscriptChannel`/`prove_oracle_relation` 批量开口到 `finish()`），9/9 绿。
+- **T1 切片 28 `vm_ram_sort`**：真实状态机 VM（vm32 语义 RV32I 子集，K=2^16 字寻址 RAM）×
+  排序式内存论证——**RAM 版本链删除**（`ld_val` 不钉电路内链），事件列逐周期钉扎
+  （ld/st 地址、rs2v、布尔标志无条件断言），恒等式① fracaddcheck + 恒等式②词级断言
+  （init 形状/非降/ts 严增/读一致）+ 三件套（final_out 公开 inout），全列 BaseFold 承诺，
+  **单一 transcript**。
+- **T2 绑定方案**：按任务书 §2.3 降级授权采用 intmul phase5 式 witness 列方案
+  （跨行比较在 quadratic mlecheck 逐行独立二次式内不可表达）；witness↔oracle 逐元素
+  leaf-claim 桥列为边界。
+- **T3 soundness**：verify 层 4 例（BadFinalOut/BadRootDen/BadDenAddr/BadDenVal）全部
+  `c_ok/l_ok == false` 拒绝，无 panic。
+- **成本**：N=16 主测 1801 周期 / 905k gates / 1.9s；N=32 缩放点 6973 周期 / 3.5M gates /
+  11.1s（T×3.87→gates×3.87 线性）；1024 字排序 O(N²) 不可达（外推 ≥5×10⁹ 门）。
+- **测试**：全量 **53 passed / 0 failed**（+3 ignored 含 N=32 缩放点）。边界与证据行见 `M8_REPORT.md`。
+
 ### `zkvm.rs` 的真实状态（⚠️ 经逐行审查，非"整合主代码"）
 - `crates/zkvm-slice/src/slices/zkvm.rs` — **非"项目主代码"**，实为**逐行验证器 + 手工内存表**：
   `drive_row` 里 **`let _ = pc;`（PC 未约束）**；`row.op` 是 `run_program()` 里 **match 死的

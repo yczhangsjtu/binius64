@@ -1,7 +1,8 @@
 # binius-zkvm-slice — Binius64 zkVM 验证 crate
 
-**日期**: 2026-09-01 → 2026-09-05 | **状态**: 已重构为 **lib crate**（`src/lib.rs`），
-26 个验证切片作为模块（`src/slices/*.rs`）暴露为 `#[test]`。
+**日期**: 2026-09-01 → 2026-09-08 | **状态**: 已重构为 **lib crate**（`src/lib.rs`），
+28 个验证切片作为模块（`src/slices/*.rs`）暴露为 `#[test]`（M7/M8-A 见文末小节与
+`../../zkvm-project/M7_REPORT.md` / `M8_REPORT.md`）。
 
 > ⚠️ **诚实勘误（2026-09-05 经逐行代码审查）**：这些切片验证的是**单机制可行**，
 > **不是**一个完整的 zkVM，**未实现**真正的内存论证（时序/排序）、**未实现**通用的
@@ -10,7 +11,7 @@
 > 标注（⚠️=夸大/需修正，⭐=真正实现）。
 
 ## 结构（重构后）
-- `src/lib.rs` — crate 根，`pub mod alu` / `pub mod vm32`，`#[path]` 引入 26 个切片模块
+- `src/lib.rs` — crate 根，`pub mod alu` / `pub mod vm32`，`#[path]` 引入 28 个切片模块
 - `src/alu.rs` — **共享 ALU 工具**：`to_bits`/`fa`/`add_constant`/`inc8`/`mul8`/`leq8`/`native_xor`/`assert_bits`
   （此前 `to_bits` 重复 13 次、`fa` 重复 12 次 → 现在各一处）
 - `src/vm32/` — **M5 词级 VM 固化库（M6 T1）**：
@@ -19,14 +20,14 @@
   - `circuit.rs` — `build_circuit`（译码/执行/32 寄存器值+版本链/RAM 版本链/事件钉扎/inout 布局）+ 词级门辅助（mux/mux8/变量移位/MSB-bool）
   - `proof.rs` — `run_machine_full`（prove + 三表 logup* + verify + 三件套）+ `reverify`/`reverify2` + `claims_from_inout` + wlog 构建 + fetch 表构建
   - `per_inst_tests.rs` + `bench_tests.rs` — 单元测试与成本基准（见下）
-- `src/slices/*.rs` — 26 个验证切片，每个 `fn main()` 改成 `pub fn run_<name>()`，末尾附 `#[test]`
+- `src/slices/*.rs` — 28 个验证切片，每个 `fn main()` 改成 `pub fn run_<name>()`，末尾附 `#[test]`
 
 ## 运行（用测试代替 cargo run）
 ```bash
 export RUSTFLAGS="-C target-cpu=native"   # 必选（AVX2）
 export CARGO_BUILD_JOBS=4
 
-# ---- 快测试（秒级）：全部 39 个测试，含 26 切片 prove/soundness + 5 per-instruction + 5 独立 soundness ----
+# ---- 快测试（秒级）：56 项（53 常规 + 3 ignored 含 N=32 缩放点）----
 CARGO_BUILD_JOBS=4 cargo test -p binius-zkvm-slice
 
 # 单切片测试
@@ -286,13 +287,33 @@ RAM 写日志表进 logup*（**现共 3 张表**：fetch + 寄存器写日志 + 
 - **诚实边界**：RAM 写日志表由 native 给定；logup* 只证一致性；**地址越界经 `& 0x3f` 掩码静默到合法地址**（未硬拒 OOB）；
   `VER_MAX=8`/`M_FETCH=6` 因 M4 循环 x6 写 6 次、程序地址到 0x28 而提升（`reg*VER_MAX+ver` 单索引需防碰撞）。
 
+## 切片 27: `ram_sort` — 排序式离线内存检查（⭐ M7/M8-A：fracaddcheck 多重集合 + BaseFold 强通道）⭐
+**M7（Phase 2 咽喉）**：排序式内存检查（路线 A）——事件侧（init+事件+final）‖ 排序流两份
+同多重集合列，恒等式① = fracaddcheck 值多重集合等式（指纹 addr+ρ·val+ρ²·ts+ρ³·kind），
+恒等式② = 词级电路断言（init 形状/非降/ts 严增/读一致）。4 列 committed。
+**gates 与地址空间 K 完全无关（0 方差）、随 T 线性（×3.93）**——解掉 M4 的 O(K·T) 版本链底噪。
+M8-A 迁移至 **BaseFold 强承诺通道**（`BaseFoldProverCompiler` + `prove_oracle_relation`），
+9/9 测试。详见 `../../zkvm-project/M7_REPORT.md`。
+
+## 切片 28: `vm_ram_sort` — 真 VM × 可扩展 RAM 论证（⭐ M8-A：vm32 执行 + 排序 RAM 论证 + BaseFold，单 transcript）⭐
+**M8-A**：真实状态机 VM（vm32 语义 RV32I 子集，K=2^16 字寻址 RAM）× 切片 27 的排序式
+内存论证整合——**RAM 版本链删除**（`ld_val` 不钉电路内链，读语义由内存论证承担），
+事件列逐周期钉扎（ld/st 地址、rs2v、is_load/is_store 无条件断言），全列 BaseFold 承诺，
+**单一 transcript**；bubblesort 端到端 prove→verify + init/final/output 三件套
+（final_out 公开 inout = 排序后最小元素）。
+- N=16 主测：1801 周期 / 905,168 gates / 1.9s；N=32 缩放点（`#[ignore]`）：6973 周期 /
+  3.5M gates / 11.1s（T×3.87→gates×3.87 线性）。
+- soundness：verify 层 4 例（篡改 final_out / root_den / addr 开口 / val 开口）全部拒绝。
+- 诚实边界：fetch 论证省略；排序完整正确性靠 native 对拍；witness↔oracle 逐元素
+  leaf-claim 桥未做（诚实路径同源）。详见 `../../zkvm-project/M8_REPORT.md`。
+
 ## 运行
-本 crate 已重构为 lib（**无 bin 目标**，`cargo run --bin` 不可用）。改用测试运行 25 个切片：
+本 crate 已重构为 lib（**无 bin 目标**，`cargo run --bin` 不可用）。改用测试运行全部切片：
 
 ```bash
 cd /home/yczhang/workspace/binius64
 export RUSTFLAGS="-C target-cpu=native"
-CARGO_BUILD_JOBS=4 cargo test -p binius-zkvm-slice      # 运行全部 25 个切片测试
+CARGO_BUILD_JOBS=4 cargo test -p binius-zkvm-slice      # 运行全部切片测试（53 + 3 ignored）
 # 单个切片（以 factorial 为例）：
 CARGO_BUILD_JOBS=4 cargo test -p binius-zkvm-slice --lib factorial
 ```

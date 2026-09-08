@@ -74,6 +74,8 @@ mod word_vm_ram;
 mod word_vm32;
 #[path = "slices/ram_sort.rs"]
 mod ram_sort;
+#[path = "slices/vm_ram_sort.rs"]
+mod vm_ram_sort;
 
 // Re-export the run functions so integration (or future bins) can call them.
 pub use inst_lookup::run_inst_lookup;
@@ -103,3 +105,4 @@ pub use word_vm::run_word_vm;
 pub use word_vm_ram::run_word_vm_ram;
 pub use word_vm32::run_word_vm32;
 pub use ram_sort::run_ram_sort;
+pub use vm_ram_sort::run_vmrs;
