@@ -86,6 +86,7 @@ M4 的版本链把 64 个计数器放进电路（O(K·T) gates），K=2^20 时�
 | **M10** | **工程化收官**：库 API 化（prove(program, input)→proof）、CI、文档、安全审查准备 | 外部调用者可 API 驱动；文档完整 | **✅ 已完成（2026-09-08，v2 验收通过）**：`vmrs_prove/vmrs_verify`（Proof=transcript bytes，bytes 往返端到端 + 自定义镜像注入）；CI 脚本 `tools/run_zkvm_tests.sh`（实跑 ALL GREEN）；`KNOWN_BOUNDARIES.md`/`SECURITY_REVIEW_PREP.md`/电路构建成本设计（`M10_REPORT.md`） |
 | **M11** | **安全修复包**（审计驱动，最高优先级）：修复 AUDIT_2026-09-08 的 S1-S5 + 中级项 | 每项修复有"修复前 PoC 可复现/修复后 verify 层拒"对照 | **✅ 已完成（2026-09-08，v3）**：S1-S5 全修复（F3 事件钉扎默认激活、fetch 位置绑定、除法断言三层修复、ver_bound、final_pc_halt）；65 绿；`M11_REPORT.md` v3；诊断更正：F3 阻塞实为 io_* 第二参数 bug（Leader 定位修复） |
 | **M12**（原 M11 顺延） | **Verifier succinctness**（用户指定优先，M11 安全修复后启动）：S1 公开输入 O(T)→O(1)（committed-only 列）+ S2 预处理模型拆分（verifier key / online verify） | 公开输入大小与 T 无关（实测）；online verify 不重建电路；proof 体积亚线性明确不做（Phase 3） | **✅ 已完成（2026-09-08）**：公开输入 24 词恒定（N=16/32/64 实测）；vmrs_verifier_setup/vmrs_verify_online 拆分（online 零 build_circuit，N=64 online 242ms）；χ-dot 锚（witness↔oracle committed-only 绑定，χ 承诺后采样）；fetch 单全点 looker + 位置绑定；F6 中级项全清；73 绿；`M12_REPORT.md`。已知完整性边界：fib 小形状诚实证明在 finish 层被拒（未定位，疑似上游 batched-opening 边界，转后续） |
+| **M13** | **fib completeness 缺口定位**（M12 遗留） | 根因 + 修复 + fib 端到端恢复 | **✅ 已完成（2026-09-08）**：根因 = fetch 表 pad 槽不变量被 ELF 镜像零间隙覆盖（bubble 通过纯属镜像短的偶然）；一行构造性修复；73 绿；`M13_REPORT.md` |
 
 > 注（2026-09-08）：M8 按关键路径拆为 M8-A（RAM 论证整合 + 强通道，协议风险集中于此）
 > 与 M8-B（ISA 补全 + 工具链，纯工程）。
