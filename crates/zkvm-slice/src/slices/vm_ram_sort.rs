@@ -521,17 +521,17 @@ pub struct VmRsIref {
 	pub prog_hash: [Wire; 4],
 	/// 事件侧重排列（M8-B T1 leaf-claim 桥：公开，开口重算对照用）。
 	pub d_addr: Vec<Wire>, pub d_ts: Vec<Wire>, pub d_val: Vec<Wire>, pub d_kind: Vec<Wire>,
-	/// M8-C：初始镜像词列（按排序流 init 行顺序；悬空 inout = transcript 承诺）。
+	/// M8-C/M11(M4)：初始镜像词列（按排序流 init 行顺序；布局末尾，接入电路断言）。
 	pub init_vals: Vec<Wire>,
 }
 
 /// inout 布局：[prog_hash×4, init_vals×ts, final_out, inst×T, pc×T, s_addr×ts, s_ts×ts,
 /// s_val×ts, s_kind×ts, d_addr×ts, d_ts×ts, d_val×ts, d_kind×ts]（M8-C 起 init_vals 在前）。
 pub const IO_HASH: usize = 0;
-pub const fn io_final_out(ts: usize) -> usize { 4 + ts }
-pub const fn io_inst(ts: usize) -> usize { 5 + ts }
-pub const fn io_pc(t_len: usize, ts: usize) -> usize { io_inst(ts) + t_len }
-pub const fn io_s_addr(t_len: usize, ts: usize) -> usize { io_inst(ts) + 2 * t_len }
+pub const fn io_final_out(_n_touch: usize) -> usize { 4 }
+pub const fn io_inst(_n_touch: usize) -> usize { 5 }
+pub const fn io_pc(t_len: usize, _n_touch: usize) -> usize { io_inst(0) + t_len }
+pub const fn io_s_addr(t_len: usize, _n_touch: usize) -> usize { io_inst(0) + 2 * t_len }
 pub const fn io_s_ts(t_len: usize, ts: usize) -> usize { io_s_addr(t_len, ts) + ts }
 pub const fn io_s_val(t_len: usize, ts: usize) -> usize { io_s_ts(t_len, ts) + ts }
 pub const fn io_s_kind(t_len: usize, ts: usize) -> usize { io_s_val(t_len, ts) + ts }
@@ -563,14 +563,13 @@ fn assert_sortedness(b: &CircuitBuilder, sa: &[Wire], sts: &[Wire], sv: &[Wire],
 	}
 }
 
-pub fn build_circuit_vmrs(t_len: usize, ts: usize) -> (Circuit, VmRsIref) {
+pub fn build_circuit_vmrs(t_len: usize, ts: usize, ev_bindings: &[(usize, usize, bool)], init_rows: &[usize]) -> (Circuit, VmRsIref) {
+	let n_touch = init_rows.len();
 	let b = CircuitBuilder::new();
 	let zero = b.add_constant_64(0);
 	let one = b.add_constant_64(1);
 	// inout 声明顺序 = inout() 布局：[prog_hash×4, final_out, inst×T, pc×T]（见 IO_* 常量）。
 	let prog_hash = [b.add_inout(), b.add_inout(), b.add_inout(), b.add_inout()];
-	// M8-C：init_vals 公开列（按排序流 init 行顺序的初始词；对照在验证端本地，锚 = init_hash）
-	let init_vals: Vec<Wire> = (0..ts).map(|_| b.add_inout()).collect();
 	let final_out = b.add_inout();
 	// M8-B T0：inst/pc 提升为公开 inout（取指 claim 来源，M5 claims_from_inout 纪律）。
 	let inst = (0..t_len).map(|_| b.add_inout()).collect::<Vec<_>>();
@@ -585,6 +584,8 @@ pub fn build_circuit_vmrs(t_len: usize, ts: usize) -> (Circuit, VmRsIref) {
 	let d_ts = (0..ts).map(|_| b.add_inout()).collect::<Vec<_>>();
 	let d_val = (0..ts).map(|_| b.add_inout()).collect::<Vec<_>>();
 	let d_kind = (0..ts).map(|_| b.add_inout()).collect::<Vec<_>>();
+	// M8-C/M11(M4)：init_vals 列（布局末尾；长度 n_touch 与验证端 init_rows 同源）
+	let init_vals: Vec<Wire> = (0..n_touch).map(|_| b.add_inout()).collect();
 	let rd1_reg = (0..t_len).map(|_| b.add_witness()).collect::<Vec<_>>();
 	let rd1_val = (0..t_len).map(|_| b.add_witness()).collect::<Vec<_>>();
 	let rd2_reg = (0..t_len).map(|_| b.add_witness()).collect::<Vec<_>>();
@@ -603,6 +604,10 @@ pub fn build_circuit_vmrs(t_len: usize, ts: usize) -> (Circuit, VmRsIref) {
 	let mut cur_reg = [zero; 32];
 	let mut cur_ver = [zero; 32];
 	let mut prev_pc = b.add_constant_64(0); // PC_START = 0
+	// M11 F3：事件行派生（行 2t/2t+1 的 addr/kind/val wire，供排序流事件行钉扎）
+	let mut ev_addr: Vec<[Wire; 2]> = Vec::new();
+	let mut ev_kind: Vec<[Wire; 2]> = Vec::new();
+	let mut ev_val: Vec<[Wire; 2]> = Vec::new();
 
 	for t in 0..t_len {
 		b.assert_eq(format!("pc[{t}]"), pc[t], prev_pc);
@@ -690,6 +695,16 @@ pub fn build_circuit_vmrs(t_len: usize, ts: usize) -> (Circuit, VmRsIref) {
 		prev_pc = next_pc;
 		// 事件 pinning（R1 语义：执行↔事件 witness 钉扎；全部 witness 输入）
 		let is_alu_write_01 = b.select(is_alu_write, one, zero);
+		// M11 F3：事件行派生 wire——行 2t = 读/PAD，行 2t+1 = 写（本引擎无 sb/sh 双事件）
+		let ev_a0 = b.select(c_is_load, ld_addr_w, b.select(c_is_store, st_addr_w, b.add_constant_64(PAD_ADDR)));
+		let ev_k0 = b.select(c_is_load, b.add_constant_64(K_READ), b.select(c_is_store, b.add_constant_64(K_WRITE), b.add_constant_64(K_INIT)));
+		let ev_v0 = b.select(c_is_load, ld_val[t], zero);
+		let ev_a1 = st_addr_w;
+		let ev_k1 = b.add_constant_64(K_WRITE);
+		let ev_v1 = rs2v;
+		ev_addr.push([ev_a0, ev_a1]);
+		ev_kind.push([ev_k0, ev_k1]);
+		ev_val.push([ev_v0, ev_v1]);
 		let is_load_01 = b.select(c_is_load, one, zero);
 		let is_store_01 = b.select(c_is_store, one, zero);
 		b.assert_eq(format!("rd1_reg[{t}]"), rd1_reg[t], rs1);
@@ -707,6 +722,24 @@ pub fn build_circuit_vmrs(t_len: usize, ts: usize) -> (Circuit, VmRsIref) {
 	}
 	// 恒等式②（排序流良构 + 读一致性）
 	assert_sortedness(&b, &s_addr, &s_ts, &s_val, &s_kind);
+	// M11（M4）：init_vals 接入——排序流第 k 个 init 行 val == init_vals[k]（行号由调用方给）。
+	for (k, &row) in init_rows.iter().enumerate() {
+		b.assert_eq(format!("init_vals[{k}]"), s_val[row], init_vals[k]);
+	}
+	// M11 F3（S1）：事件行钉扎——排序流的每个读/写行必须 == 执行派生值（addr/kind/val/ts）。
+	// 这是执行↔内存论证的缝合点：无此绑定，ld_val 注入假读值可在分支不翻转时
+	// 自洽地伪造输出（审计 S1 场景）。PAD 行（kind=INIT）不绑（占位行由 ts 断言覆盖结构）。
+	for &(t, row, is_write) in ev_bindings {
+		let (ea, ek, ev, et) = if is_write {
+			(ev_addr[t][1], ev_kind[t][1], ev_val[t][1], 2 * t as u64 + 1)
+		} else {
+			(ev_addr[t][0], ev_kind[t][0], ev_val[t][0], 2 * t as u64)
+		};
+		b.assert_eq(format!("ev_addr[{row}]"), s_addr[row], ea);
+		b.assert_eq(format!("ev_kind[{row}]"), s_kind[row], ek);
+		b.assert_eq(format!("ev_val[{row}]"), s_val[row], ev);
+		b.assert_eq(format!("ev_ts[{row}]"), s_ts[row], b.add_constant_64(et));
+	}
 	// 三件套：final 输出（OUT_ADDR 的最终值 = 排序后最小元素）
 	let mut acc = zero;
 	for j in 0..ts {
@@ -791,6 +824,9 @@ pub enum Tamper {
 	/// 例 8（leaf-claim 桥，M8-B T1）：验证端篡改公开排序流事件侧列 d_val（电路不约束该列、
 	/// oracle 保持承诺值）→ 开口重算对照失配 → `l_ok == false`（c_ok/s_ok 不受影响，隔离桥的作用）。
 	BadBridgeWitness,
+	/// 例 9（M11-R2/F3）：验证端篡改排序流读/写行的 s_val inout 词 → frontend 的
+	/// transcript 绑定拒 → `c_ok == false`（证明"排序流 inout 被绑定"）。
+	BadEventRow,
 }
 
 /// T1 主流程（M8-B T0 升级）：native 排序程序 → trace → 电路（执行+恒等式②+公开 inst/pc）
@@ -857,7 +893,22 @@ fn vmrs_prove_impl(n: usize, word_overrides: &[(u64, u64)], program: Option<&[u6
 	let final_val = trace.final_mem[OUT_ADDR as usize] as u64;
 
 	let t_build = std::time::Instant::now();
-	let (circuit, iref) = build_circuit_vmrs(t_len, ts);
+	// M11 F3：事件绑定表——(周期 t, 排序流行号, 是否写)；ts/2 还原周期，ts 奇偶区分读/写
+	let mut ev_bindings: Vec<(usize, usize, bool)> = sorted
+		.iter()
+		.enumerate()
+		.filter(|(_, e)| e.kind == K_READ || e.kind == K_WRITE)
+		.map(|(row, e)| ((e.ts / 2) as usize, row, e.kind == K_WRITE))
+		.collect();
+	ev_bindings.sort_by_key(|&(t, row, is_w)| (t, is_w, row));
+	let init_rows: Vec<usize> = sorted
+		.iter()
+		.enumerate()
+		.filter(|(_, e)| e.kind == K_INIT && e.addr != PAD_ADDR)
+		.map(|(row, _)| row)
+		.collect();
+
+	let (circuit, iref) = build_circuit_vmrs(t_len, ts, &ev_bindings, &init_rows);
 	let stat = CircuitStat::collect(&circuit);
 	eprintln!("[phase] build_circuit+stat: {:?}", t_build.elapsed());
 	let cs = circuit.constraint_system().clone();
@@ -894,7 +945,7 @@ fn vmrs_prove_impl(n: usize, word_overrides: &[(u64, u64)], program: Option<&[u6
 		w[iref.d_kind[j]] = Word(side[j].kind);
 	}
 	// M8-C：init_vals 列（排序流 init 行顺序的初始词）+ init 声明与哈希
-	let init_vals_w: Vec<u64> = sorted.iter().filter(|e| e.kind == K_INIT).map(|e| e.val).collect();
+	let init_vals_w: Vec<u64> = sorted.iter().filter(|e| e.kind == K_INIT && e.addr != PAD_ADDR).map(|e| e.val).collect();
 	let init_words: Vec<(usize, u32)> = sorted
 		.iter()
 		.filter(|e| e.kind == K_INIT)
@@ -992,7 +1043,7 @@ fn vmrs_prove_impl(n: usize, word_overrides: &[(u64, u64)], program: Option<&[u6
 	// indexed logup*：每周期一个单行 looker (index=pc/4, claim=inst)，claims 来自公开 inout。
 	let gamma: LF = chan.sample();
 	let look_idx: Vec<[usize; 1]> = trace.cycles.iter().map(|c| [(c.pc >> 2) as usize]).collect();
-	let look_claims: Vec<LF> = inout_words[io_inst(ts)..io_inst(ts) + t_len].iter().map(|w| LF::from(w.0 as u128)).collect();
+	let look_claims: Vec<LF> = inout_words[io_inst(init_rows.len())..io_inst(init_rows.len()) + t_len].iter().map(|w| LF::from(w.0 as u128)).collect();
 	let lookers: Vec<LogupLooker<LF>> = look_idx
 		.iter()
 		.zip(&look_claims)
@@ -1083,8 +1134,46 @@ fn vmrs_verify_impl(proof: &VmRsProof, tamper: Tamper, expected_hash: Option<[u6
 	let l = *l;
 	let mp = *mp;
 	let inout_words = inout_words.clone();
+	// M11 F3：bindings/init_rows 从公开 inout 的排序流重建（与 prove 端同源；io_* 以 n_touch 为锚）
+	let mut ev_bindings_v: Vec<(usize, usize, bool)> = Vec::new();
+	let mut init_rows_v: Vec<usize> = Vec::new();
+	for row in 0..ts {
+		let a = inout_words[io_s_addr(t_len, ts) + row].0;
+		let k = inout_words[io_s_kind(t_len, ts) + row].0;
+		let t = (inout_words[io_s_ts(t_len, ts) + row].0 / 2) as usize;
+		if k == K_READ || k == K_WRITE {
+			ev_bindings_v.push((t, row, k == K_WRITE));
+		}
+		if k == K_INIT && a != PAD_ADDR {
+			init_rows_v.push(row);
+		}
+	}
+	ev_bindings_v.sort_by_key(|&(t, row, is_w)| (t, is_w, row));
 	// 重建约束系统（电路参数由 proof 元数据决定；与 prove 端逐门一致）
-	let (circuit, _) = build_circuit_vmrs(t_len, ts);
+	let mut ev_bindings_v: Vec<(usize, usize, bool)> = Vec::new();
+	let mut init_rows_v: Vec<usize> = Vec::new();
+	for row in 0..ts {
+		let a = inout_words[io_s_addr(t_len, ts) + row].0;
+		let k = inout_words[io_s_kind(t_len, ts) + row].0;
+		let t = (inout_words[io_s_ts(t_len, ts) + row].0 / 2) as usize;
+		if k == K_READ || k == K_WRITE {
+			ev_bindings_v.push((t, row, k == K_WRITE));
+		}
+		if k == K_INIT && a != PAD_ADDR {
+			init_rows_v.push(row);
+		}
+	}
+	ev_bindings_v.sort_by_key(|&(t, row, is_w)| (t, is_w, row));
+	eprintln!("DBG rebuild: ts={ts} t_len={t_len} init_rows_v={} ev_bindings_v={}", init_rows_v.len(), ev_bindings_v.len());
+	let mut dbg_init = 0usize; let mut dbg_ev = 0usize;
+	for row in 0..ts {
+		let k = inout_words[io_s_kind(t_len, ts) + row].0;
+		if k == K_INIT { dbg_init += 1; }
+		if k == K_READ || k == K_WRITE { dbg_ev += 1; }
+	}
+	eprintln!("DBG row0: a={:x} k={}", inout_words[io_s_addr(t_len, ts)].0, inout_words[io_s_kind(t_len, ts)].0);
+	eprintln!("DBG count: init={dbg_init} ev={dbg_ev}");
+	let (circuit, _) = build_circuit_vmrs(t_len, ts, &ev_bindings_v, &init_rows_v);
 	let verifier = WordVerifier::<StdHashSuite>::setup(circuit.constraint_system().clone(), 1).expect("verifier setup");
 	let alloc = GlobalAllocator;
 
@@ -1099,6 +1188,10 @@ fn vmrs_verify_impl(proof: &VmRsProof, tamper: Tamper, expected_hash: Option<[u6
 	};
 	if tamper == Tamper::BadBridgeWitness {
 		inout_verify[io_d_val(t_len, ts)].0 ^= 1;
+	}
+	if tamper == Tamper::BadEventRow {
+		// M11-R2：翻转排序流一个读/写行的 s_val（inout 词；frontend transcript 绑定拒）
+		inout_verify[io_s_val(t_len, ts) + ts].0 ^= 1;
 	}
 	let t_verify = std::time::Instant::now();
 	let c_ok = verifier.verify(&inout_verify, &mut vt).is_ok();
@@ -1181,11 +1274,23 @@ fn vmrs_verify_impl(proof: &VmRsProof, tamper: Tamper, expected_hash: Option<[u6
 			Ok(o) => o,
 			Err(_) => return false,
 		};
+		// M11 F2（S2）：取指位置绑定——index claim 是 prover 消息，验证端必须与公开 pc 列
+		// 逐点对照：单行 looker 的 index 多项式为常量 = 槽号（pc/4），否则可在任意周期
+		// 执行表中任意槽位的指令（成员关系满足而位置不符）。
+		let f2_skip = std::env::var("M11_F2_SKIP").is_ok();
+		if !f2_skip {
+		for (t, ic) in vout.tables[0].index_eval_claims.iter().enumerate() {
+			let expected_slot = inout_verify[io_pc(t_len, ts) + t].0 >> 2;
+			if *ic != LF::from(expected_slot as u128) {
+				return false;
+			}
+		}
+		}
 		let vtep = vout.table_eval_point.clone();
 		let vclaim = vout.tables[0].eval_claim;
-		vchan
-			.verify_oracle_relation(v_o_prog, Box::new(move |p: &[LF]| eq_ind(&vtep, p)), vclaim)
-			.is_ok()
+		let r = vchan.verify_oracle_relation(v_o_prog, Box::new(move |p: &[LF]| eq_ind(&vtep, p)), vclaim);
+		if r.is_err() { eprintln!("DBG prog relation err: {:?}", r.as_ref().err()); }
+		r.is_ok()
 	})();
 	let vrho: LF = vchan.sample();
 	let vc: LF = vchan.sample();
@@ -1226,20 +1331,20 @@ fn vmrs_verify_impl(proof: &VmRsProof, tamper: Tamper, expected_hash: Option<[u6
 			}
 			sum_eq += e;
 		}
-		if vfinal.num_eval != sum_eq { return false; }
+		if vfinal.num_eval != sum_eq { eprintln!("DBG num_eval mismatch"); return false; }
 		let a_use = if tamper == Tamper::BadDenAddr { addr_r_v + LF::ONE } else { addr_r_v };
 		let v_use = if tamper == Tamper::BadDenVal { val_r_v + LF::ONE } else { val_r_v };
 		let rr2 = vrho * vrho;
 		let rr3 = rr2 * vrho;
 		let den_check = vc * sum_eq + a_use + vrho * v_use + rr2 * ts_r_v + rr3 * kind_r_v + (LF::ONE - sum_eq);
-		if vfinal.den_eval != den_check { return false; }
+		if vfinal.den_eval != den_check { eprintln!("DBG den_check mismatch"); return false; }
 		// oracle relation claim 用公开重算值（leaf-claim 桥对照点）
 		let ok_addr = vchan.verify_oracle_relation(v_o_addr, Box::new({ let rr = r.clone(); move |p: &[LF]| eq_ind(&rr, p) }), addr_r_v);
 		let ok_val = vchan.verify_oracle_relation(v_o_val, Box::new({ let rr = r.clone(); move |p: &[LF]| eq_ind(&rr, p) }), val_r_v);
 		let ok_ts = vchan.verify_oracle_relation(v_o_ts, Box::new({ let rr = r.clone(); move |p: &[LF]| eq_ind(&rr, p) }), ts_r_v);
 		let ok_kind = vchan.verify_oracle_relation(v_o_kind, Box::new({ let rr = r.clone(); move |p: &[LF]| eq_ind(&rr, p) }), kind_r_v);
 		ok_addr.is_ok() && ok_val.is_ok() && ok_ts.is_ok() && ok_kind.is_ok()
-	})(&mut vchan) && match vchan.finish() { Ok(_) => true, Err(_) => false };
+	})(&mut vchan) && match vchan.finish() { Ok(_) => true, Err(e) => { eprintln!("DBG finish: {e:?}"); false } };
 
 	VmRsVerifyOut { c_ok, l_ok, hash_ok, s_ok }
 }
@@ -1375,6 +1480,32 @@ mod tests {
 		let v_bad = vmrs_verify(&bad, Some(proof_init_hash_stash));
 		let _ = proof_init_hash_stash;
 		assert!(!v_bad.s_ok, "篡改初始镜像声明必须被 init 对照拒绝");
+	}
+
+	/// M11-R2（F3/S1）：诚实 prove + 验证端篡改排序流读/写行 s_val → verify 层拒。
+	/// 直接证明"排序流 inout 被绑定"（事件行钉扎激活后，篡改即破坏 ev_val 钉扎断言）。
+	#[test]
+	fn vm_ram_sort_soundness_bad_event_row() {
+		let proof = vmrs_prove(16, None);
+		let v = vmrs_verify_impl(&proof, Tamper::BadEventRow, Some(proof.prog_hash));
+		assert!(
+			!v.c_ok,
+			"M11 F3：篡改排序流事件行 s_val 必须被 verify 层拒绝（修复前此形态全绿=漏洞实证）"
+		);
+		println!("sound 10/bad-event-row: c_ok={} l_ok={} hash_ok={} s_ok={}", v.c_ok, v.l_ok, v.hash_ok, v.s_ok);
+	}
+
+	/// M11 F2 PoC：周期 0 执行表中另一槽位（slot 5）的指令字——成员关系满足、位置不符。
+	/// 修复前：fetch 只证成员 → 全绿（漏洞实证）；修复后：index 对照 → 拒（l_ok=false）。
+	#[test]
+	fn vm_ram_sort_soundness_fetch_position() {
+		let slot5_word = prog_image(5, 16);
+		let run = run_vmrs(16, Tamper::SwapProgram, Some(prog_image_hash(16)), &[(0x0, slot5_word)]);
+		assert!(
+			!run.l_ok,
+			"M11 F2：执行另一槽位的指令必须被位置对照拒绝（修复前全绿=漏洞实证）"
+		);
+		show(&run, "sound 9/fetch-position (index binding)");
 	}
 
 	/// M9 T0/T1：N=64（M8-A 时电路构建 OOM/SIGKILL 的规模）。

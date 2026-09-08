@@ -87,6 +87,12 @@ pub struct M5Run {
 	pub witness: binius_core::constraint_system::ValueVec,
 }
 pub fn run_machine_full(init: [u32; NREG], init_mem: &[u32; NRAM], word_overrides: &[(u64, u64)], load_overrides: &[(usize, u32)], fetch: fn(u64) -> u64) -> M5Run {
+	run_machine_full_impl(init, init_mem, word_overrides, load_overrides, fetch, 0)
+}
+
+/// M11 F1：带 m_q advice 篡改偏移的变体（PoC/对照专用；私有实现，测试经 cfg(test) 包装）。
+/// `mq_delta` 逐周期加到 advice 商上（0 = 诚实）。
+fn run_machine_full_impl(init: [u32; NREG], init_mem: &[u32; NRAM], word_overrides: &[(u64, u64)], load_overrides: &[(usize, u32)], fetch: fn(u64) -> u64, mq_delta: i64) -> M5Run {
 	let trace = run_program(init_mem, word_overrides, load_overrides, fetch);
 	let t_len = trace.cycles.len();
 	let (circuit, iref) = build_circuit(&trace);
@@ -137,7 +143,10 @@ pub fn run_machine_full(init: [u32; NREG], init_mem: &[u32; NRAM], word_override
 			w[iref.is_store[t]] = Word(0);
 		}
 	}
-	for t in 0..t_len { w[iref.m_q[t]] = Word(trace.cycles[t].m_q as u64); }
+	for t in 0..t_len {
+		let q = trace.cycles[t].m_q as i64 + mq_delta;
+		w[iref.m_q[t]] = Word(q.rem_euclid(1 << 32) as u64);
+	}
 	for r in 0..NREG { w[iref.init_regs[r]] = Word(init[r] as u64); w[iref.final_regs[r]] = Word(trace.final_regs[r] as u64); }
 	for a in 0..NRAM { w[iref.fin_ver[a]] = Word(trace.final_ramver[a] as u64); }
 	circuit.populate_wire_witness(&mut w).expect("witness fill");
@@ -188,11 +197,15 @@ pub fn reverify2(run: &M5Run, bad_inout: &[Word]) -> (bool, bool) {
 	let c_ok = run.verifier.verify(bad_inout, &mut bv).is_ok();
 	let vg = binius_ip::channel::IPVerifierChannel::<LF>::sample(&mut bv);
 	let (_, fetch_claims, _, reg_claims, _, ram_claims) = claims_from_inout(bad_inout, run.t_len);
-	let l_ok = logup_star::verify_reduction::<LF, _>(&vg, [
+	let mut v_tables = vec![
 		logup_star::TableLookup { n_vars: M_FETCH, lookers: fetch_claims.iter().map(|&c| logup_star::LookerClaim { eval_point: &[] as &[LF], eval_claim: LF::from(c as u128) }).collect() },
 		logup_star::TableLookup { n_vars: M_W_REG, lookers: reg_claims.iter().map(|&c| logup_star::LookerClaim { eval_point: &[] as &[LF], eval_claim: LF::from(c as u128) }).collect() },
-		logup_star::TableLookup { n_vars: M_W_RAM, lookers: ram_claims.iter().map(|&c| logup_star::LookerClaim { eval_point: &[] as &[LF], eval_claim: LF::from(c as u128) }).collect() },
-	], &mut bv).is_ok();
+	];
+	// M11：RAM 表仅在确有访存 claim 时参与（空 lookers 表触发上游 assert）
+	if !ram_claims.is_empty() {
+		v_tables.push(logup_star::TableLookup { n_vars: M_W_RAM, lookers: ram_claims.iter().map(|&c| logup_star::LookerClaim { eval_point: &[] as &[LF], eval_claim: LF::from(c as u128) }).collect() });
+	}
+	let l_ok = logup_star::verify_reduction::<LF, _>(&vg, v_tables, &mut bv).is_ok();
 	(c_ok, l_ok)
 }
 pub fn reverify(run: &M5Run, bad_inout: &[Word]) -> bool {
@@ -203,3 +216,8 @@ pub fn reverify(run: &M5Run, bad_inout: &[Word]) -> bool {
 #[cfg(test)]
 #[path = "bench_tests.rs"]
 mod bench_tests;
+
+#[cfg(test)]
+pub fn run_machine_full_opt(init: [u32; NREG], init_mem: &[u32; NRAM], word_overrides: &[(u64, u64)], load_overrides: &[(usize, u32)], fetch: fn(u64) -> u64, mq_delta: i64) -> M5Run {
+	run_machine_full_impl(init, init_mem, word_overrides, load_overrides, fetch, mq_delta)
+}

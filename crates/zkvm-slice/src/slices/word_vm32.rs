@@ -272,6 +272,50 @@ mod tests {
 }
 
 #[cfg(test)]
+mod m11_tests {
+	use super::*;
+	use crate::vm32::isa::*;
+	use crate::vm32::proof::run_machine_full;
+
+	/// divu 7/2 微程序镜像（word_overrides 机制）。
+	fn divu_prog() -> Vec<(u64, u64)> {
+		let mut p: Vec<(u64, u64)> = Vec::new();
+		let mut at = 0x00u64;
+		p.push((at, lhs_lui(1, 0)));
+		at += 4;
+		p.push((at, addi(1, 1, 7)));
+		at += 4;
+		p.push((at, addi(2, 0, 2)));
+		at += 4;
+		p.push((at, divu(3, 1, 2)));
+		at += 4;
+		p.push((at, jal(0, 0xc4 - at)));
+		p
+	}
+	fn fetch_halt(_: u64) -> u64 { 0x00000073 }
+
+	/// M11 F1 PoC：advice 商 +1（4 而非 3）。
+	/// 修复前：断言恒真 → 全绿（漏洞实证）；
+	/// 修复后：verify 层拒绝（m_assert populate 失败 → c_ok=false）。
+	#[test]
+	fn m11_f1_div_mq_tamper_rejected() {
+		let prog = divu_prog();
+		// 诚实基线
+		let honest = run_machine_full([0u32; NREG], &[0u32; NRAM], &prog, &[], fetch_halt);
+		assert!(honest.c_ok && honest.l_ok, "诚实 divu 7/2 必须通过");
+		assert_eq!(honest.trace.final_regs[3], 3, "7/2 商 = 3");
+		// PoC/用例：验证端篡改公开 inout 的 advice 商（+1）
+		// 修复前：m_assert 恒真 → reverify 双绿（漏洞实证）；
+		// 修复后：verify 层拒绝（c_ok=false，无 panic）。
+		let mut bad_inout = honest.inout_words.clone();
+		let mq_base = 20 * honest.trace.cycles.len() + 2 * NREG + NRAM; // 布局：20T+init+final+fin_ver 之后
+		bad_inout[mq_base + 3].0 = (bad_inout[mq_base + 3].0 + 1) & 0xffffffff;
+		let (c_ok, l_ok) = crate::vm32::proof::reverify2(&honest, &bad_inout);
+		assert!(!c_ok, "M11 F1：篡改 advice 商必须被 verify 层拒绝（修复前全绿=漏洞实证）");
+	}
+}
+
+#[cfg(test)]
 mod m8b_tests {
 	use super::*;
 	use crate::vm32::interp::run_program;

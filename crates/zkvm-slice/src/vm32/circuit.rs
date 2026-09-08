@@ -255,32 +255,45 @@ pub fn build_circuit(trace: &Trace) -> (Circuit, InoutRefs) {
 		let lui_v = imm_u_val;
 		let auipc_v = b.iadd_32(pc_v, imm_u_val);
 		let jal_rd = b.iadd_32(pc_v, b.add_constant_64(4));
-		// ---- M8-B T2：RV32M 展开验证（设计详案 §2.6：advice 商 + 断言序列）----
-		// m_q 公开 advice（商）；余数 = x − q·y 电路导出。除零由 select 修正（div→-1、rem→x）；
-		// MIN÷−1 溢出在模 2^32 下自动正确（abs_x=MIN、商符号取负回到 MIN）。
+		// ---- RV32M 展开验证（M11 F1 修复：审计 S3 三层）----
+		// ① MSB 直读：s_ok/uns_ok 是 MSB-bool（band of icmp 输出），bad 归一用
+		//   `select(msb, zero, one)` 直读 MSB——**禁止**再经全词 icmp_eq（低 63 位未定义，
+		//   归一恒假 → 断言恒真，审计 S3-①）。
+		// ② 关系：断言 `r < y`（r = x − q·y 由定义即 q·y+r==x mod 2^32），**非** q·y==x
+		//   （旧代码误写整除约束，配合①被掩盖，审计 S3-②）。
+		// ③ 环绕防护：断言 imul 高位 == 0（q·y < 2^32），否则 lo 是 mod-2^32 多解
+		//   （审计 S3-③）。
 		let q = m_q[t];
 		let x32 = rs1v;
 		let y32 = rs2v;
-		let qy32 = b.band(b.imul(q, y32).1, b.add_constant_64(0xffffffff));
+		let prod_u = b.imul(q, y32);
+		let hi_u_is0 = b.icmp_eq(prod_u.0, zero); // 无环绕（③）
+		let qy32 = b.band(prod_u.1, b.add_constant_64(0xffffffff));
 		let r_u = b.band(b.isub_bin_bout(x32, qy32, zero).0, b.add_constant_64(0xffffffff));
 		let y_is0 = b.icmp_eq(y32, zero);
 		let q_is_max = b.icmp_eq(q, b.add_constant_64(0xffffffff));
-		let uns_ok = b.select(y_is0, b.band(q_is_max, b.icmp_eq(r_u, x32)), b.band(b.icmp_eq(qy32, x32), b.icmp_ult(r_u, y32)));
+		// 无符号：y≠0 ⇒ 无环绕 ∧ r<y；y=0 ⇒ q=MAX（r=x 自动成立）
+		let uns_ok = b.select(y_is0, q_is_max, b.band(hi_u_is0, b.icmp_ult(r_u, y32)));
 		let sign_x = b.shl(b.band(b.srl32(x32, 31), one), 63); // 0/1 → MSB-bool（select 条件约定）
 		let sign_y = b.shl(b.band(b.srl32(y32, 31), one), 63);
 		let neg32 = |v: Wire| b.band(b.iadd_32(b.bnot(v), one), b.add_constant_64(0xffffffff));
 		let abs_x = b.select(sign_x, neg32(x32), x32);
 		let abs_y = b.select(sign_y, neg32(y32), y32);
-		let prod_s = b.band(b.imul(q, abs_y).1, b.add_constant_64(0xffffffff));
-		let r_s = b.band(b.isub_bin_bout(abs_x, prod_s, zero).0, b.add_constant_64(0xffffffff));
+		let prod_s = b.imul(q, abs_y);
+		let hi_s_is0 = b.icmp_eq(prod_s.0, zero); // 无环绕（③）
+		let prod_s_lo = b.band(prod_s.1, b.add_constant_64(0xffffffff));
+		let r_s = b.band(b.isub_bin_bout(abs_x, prod_s_lo, zero).0, b.add_constant_64(0xffffffff));
 		let abs_y0 = b.icmp_eq(abs_y, zero);
-		let s_ok = b.select(abs_y0, b.band(q_is_max, b.icmp_eq(r_s, abs_x)), b.band(b.icmp_eq(prod_s, abs_x), b.icmp_ult(r_s, abs_y)));
+		// 有符号：|y|≠0 ⇒ 无环绕 ∧ r<|y|；|y|=0 ⇒ q=MAX（div→-1 语义，r=|x| 自动）
+		let s_ok = b.select(abs_y0, q_is_max, b.band(hi_s_is0, b.icmp_ult(r_s, abs_y)));
 		let is_signed_m = b.icmp_eq(b.band(funct3, one), zero); // div(4)/rem(6) 偶，divu/remu 奇
-		let s_bad = b.select(b.icmp_eq(s_ok, zero), one, zero); // 0/1 归一（MSB-bool 不可直接 assert_eq 0）
-		let uns_bad = b.select(b.icmp_eq(uns_ok, zero), one, zero);
+		let s_bad = b.select(s_ok, zero, one); // ① MSB 直读归一
+		let uns_bad = b.select(uns_ok, zero, one); // ①
 		let m_bad = b.select(is_signed_m, s_bad, uns_bad);
 		let is_div_family01 = bool01(&b, b.band(is_m_ext, b.icmp_ult(b.add_constant_64(3), funct3))); // funct3 ∈ 4..7
 		b.assert_eq(format!("m_assert[{t}]"), b.band(is_div_family01, m_bad), zero);
+		// M11 F1：div_v/rem_v 的导出在上述约束成立时唯一（q 被 r<y 与无环绕唯一化）；
+		// 除零分支保持 RISC-V 语义（div→-1、rem→x）；MIN÷−1 溢出在模 2^32 下自动正确。
 		let neg_div = b.bxor(sign_x, sign_y);
 		let div_v = b.select(y_is0, b.add_constant_64(0xffffffff), b.select(neg_div, neg32(q), q));
 		let rem_v = b.select(y_is0, x32, b.select(sign_x, neg32(r_s), r_s));
@@ -378,6 +391,10 @@ pub fn build_circuit(trace: &Trace) -> (Circuit, InoutRefs) {
 		let is_store_01 = b.select(c_is_store, one, zero);
 		let rd_ver_now = mux(&b, &cur_ver, rd);
 		let rd_ver_after = rd_ver_now; // cur_ver already updated to post-write state
+		// M11 F5：版本上界——写前版本必须 ≤ VER_MAX−2（写后 ver+1 ≤ VER_MAX−1，
+		// 防止 reg*VER_MAX+ver 别名到相邻寄存器的行；ver_at_max 为 0/1）
+		let ver_at_max = bool01(&b, b.icmp_ult(b.add_constant_64((VER_MAX - 1) as u64), rd_ver_now));
+		b.assert_eq(format!("ver_bound[{t}]"), b.band(is_alu_write_01, ver_at_max), zero);
 		b.assert_eq(format!("rd1_reg[{t}]"), rd1_reg[t], rs1);
 		b.assert_eq(format!("rd1_ver[{t}]"), rd1_ver[t], rs1_ver);
 		b.assert_eq(format!("rd1_val[{t}]"), rd1_val[t], rs1v);
@@ -397,6 +414,8 @@ pub fn build_circuit(trace: &Trace) -> (Circuit, InoutRefs) {
 		b.assert_eq(format!("is_store[{t}]"), is_store[t], is_store_01);
 	}
 
+	// M11 F4：终止约束——末周期必须执行 HALT 行（pc == HALT_ADDR；防任意截断前缀证明）
+	b.assert_eq("final_pc_halt", pc[t_len - 1], b.add_constant_64(HALT_ADDR));
 	// T3 init / final / output (verifier-side pinning)
 	for r in 0..NREG {
 		b.assert_eq(format!("init_regs[{r}]"), init_regs[r], zero);
