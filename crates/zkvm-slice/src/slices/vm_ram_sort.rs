@@ -20,7 +20,6 @@
 //! （电路词级断言）+ 同值 committed oracle（恒等式①归约绑定）。间隙与理由见 M8_REPORT。
 
 use binius_compute::GlobalAllocator;
-use binius_core::constraint_system::ValueVec;
 use binius_core::word::Word;
 use binius_field::arch::{OptimalB128, OptimalPackedB128};
 use binius_field::Field;
@@ -67,6 +66,7 @@ pub const K: usize = 1 << K_BITS;
 /// 数据数组基址（RAM 数据区）。
 pub const BASE: u64 = 0x1000;
 /// 排序元素数（主测 16 字——prove 时间预算；缩放点 32/64 可选）。
+#[allow(dead_code)]
 pub const N: usize = 16;
 /// kind 编码：0=init/none, 1=read, 2=write, 3=final。
 pub const K_INIT: u64 = 0;
@@ -79,6 +79,7 @@ pub const PAD_ADDR: u64 = 0xffff;
 pub const OUT_ADDR: u64 = BASE;
 
 // ---- 指令编码（vm32/isa 同款，简化版；程序用到的子集） ----
+#[allow(dead_code)]
 fn opcode(x: u64, lo: u32, hi: u32) -> u64 {
 	(x >> lo) & ((1u64 << (hi - lo + 1)) - 1)
 }
@@ -100,6 +101,7 @@ pub fn addi(rd: u64, rs1: u64, imm: i64) -> u64 { i_enc(0x13, 0, rd, rs1, imm) }
 pub fn lui(rd: u64, imm20: i64) -> u64 { ((imm20 as u64 & 0xfffff) << 12) | (rd << 7) | 0x37 }
 pub fn lw(rd: u64, rs1: u64, imm: i64) -> u64 { i_enc(0x03, 2, rd, rs1, imm) }
 pub fn sw(rs2: u64, rs1: u64, imm: i64) -> u64 { s_enc(0x23, 2, rs2, rs1, imm) }
+#[allow(dead_code)]
 pub fn blt(rs1: u64, rs2: u64, imm: i64) -> u64 { b_enc(0x63, 4, rs2, rs1, imm) }
 pub fn bge(rs1: u64, rs2: u64, imm: i64) -> u64 { b_enc(0x63, 5, rs2, rs1, imm) }
 pub fn bltu(rs1: u64, rs2: u64, imm: i64) -> u64 { b_enc(0x63, 6, rs2, rs1, imm) }
@@ -511,7 +513,7 @@ pub const IO_HASH: usize = 0;
 pub const IO_FINAL_OUT: usize = 4;
 pub const IO_INST: usize = 5;
 pub const fn io_pc(t_len: usize) -> usize { IO_INST + t_len }
-pub const fn io_s_addr(t_len: usize, ts: usize) -> usize { IO_INST + 2 * t_len }
+pub const fn io_s_addr(t_len: usize, _ts: usize) -> usize { IO_INST + 2 * t_len }
 pub const fn io_s_ts(t_len: usize, ts: usize) -> usize { io_s_addr(t_len, ts) + ts }
 pub const fn io_s_val(t_len: usize, ts: usize) -> usize { io_s_ts(t_len, ts) + ts }
 pub const fn io_s_kind(t_len: usize, ts: usize) -> usize { io_s_val(t_len, ts) + ts }
@@ -701,6 +703,30 @@ pub fn build_circuit_vmrs(t_len: usize, ts: usize) -> (Circuit, VmRsIref) {
 }
 
 // ---- 运行结果 ----
+/// M10 T1：公开 Proof 形态——transcript bytes + 公开 inout + 元数据。
+/// 公开输入清单：程序镜像哈希（prog_hash）、初始内存镜像（本引擎全 0 常量）、
+/// 输出（inout 内 final_out 词）。verifier 线性读入 inout（succinctness 边界见文档）。
+pub struct VmRsProof {
+	pub proof_bytes: Vec<u8>,
+	pub inout_words: Vec<Word>,
+	pub prog_hash: [u64; 4],
+	pub n: usize,
+	pub t_len: usize,
+	pub ts: usize,
+	pub l: usize,
+	pub mp: usize,
+	pub stat: CircuitStat,
+	pub sorted_ok: bool,
+}
+
+/// M10 T1：验证输出（四层标志）。
+pub struct VmRsVerifyOut {
+	pub c_ok: bool,
+	pub l_ok: bool,
+	pub hash_ok: bool,
+	pub s_ok: bool,
+}
+
 pub struct VmRsRun {
 	pub c_ok: bool,
 	pub l_ok: bool,
@@ -713,9 +739,10 @@ pub struct VmRsRun {
 	pub ts: usize,
 	pub l: usize,
 	pub inout_words: Vec<Word>,
-	pub prover: WordProver<LP, StdHashSuite>,
-	pub verifier: WordVerifier<StdHashSuite>,
-	pub witness: ValueVec,
+	/// M10 T1 起不再携带证明器实例（prove/verify 已拆分，transcript bytes 在 VmRsProof）。
+	pub prover: (),
+	pub verifier: (),
+	pub witness: (),
 	pub sorted_ok: bool,
 }
 
@@ -749,9 +776,19 @@ pub enum Tamper {
 ///
 /// `expected_hash`：验证端持有的公开程序哈希（None = 跳过对照）；`word_overrides`：
 /// 执行镜像的指令替换（SwapProgram 坏例用——承诺表仍用原镜像）。
-pub fn run_vmrs(n: usize, tamper: Tamper, expected_hash: Option<[u64; 4]>, word_overrides: &[(u64, u64)]) -> VmRsRun {
-	// fetch 闭包捕获 n：排序规模随参数变化（prog_fetch 固定用常量 N，仅作外部便捷入口）。
-	let trace = run_program_big(&vec![0u32; K], word_overrides, |pc| prog_image((pc >> 2) as usize, n));
+/// M10 v2 公开 API：prove(program) -> Proof（transcript bytes + 公开 inout + 元数据）。
+/// 测试钩子（word_overrides/bad_hash）不在公开面——需要时经 crate 内 `vmrs_prove_impl`。
+pub fn vmrs_prove(n: usize, program: Option<&[u64]>) -> VmRsProof {
+	vmrs_prove_impl(n, &[], program, false)
+}
+
+/// 私有实现（含测试钩子参数；公开签名见 [`vmrs_prove`]）。
+fn vmrs_prove_impl(n: usize, word_overrides: &[(u64, u64)], program: Option<&[u64]>, bad_hash: bool) -> VmRsProof {
+	// M10 T1：程序镜像可注入（None = 内置 bubblesort(n)）；fetch 闭包统一从镜像槽读取。
+	let image: Vec<u64> = program.map(|p| p.to_vec()).unwrap_or_else(|| (0..1usize << m_prog(n)).map(|slot| prog_image(slot, n)).collect());
+	let image_for_hash = image.clone();
+	let fetch_prog = move |pc: u64| image.get((pc >> 2) as usize).copied().unwrap_or(0x00000073);
+	let trace = run_program_big(&vec![0u32; K], word_overrides, fetch_prog);
 	assert!(trace.cycles.len() < 1_500_000);
 	let t_len = trace.cycles.len();
 	let (rows, side) = event_rows(&trace);
@@ -761,10 +798,26 @@ pub fn run_vmrs(n: usize, tamper: Tamper, expected_hash: Option<[u64; 4]>, word_
 	let l = (usize::BITS - ((2 * ts) - 1).leading_zeros()) as usize;
 	let nrows = 1usize << l;
 
-	// committed fetch 表（程序镜像）与公开镜像哈希
+	// committed fetch 表（程序镜像）与公开镜像哈希——跟随注入的镜像
 	let mp = m_prog(n);
-	let prog_table = prog_col(n);
-	let img_hash = prog_image_hash(n);
+	let prog_table = if program.is_some() {
+		let mut t = image_for_hash.clone();
+		t.resize(1 << mp, 0x00000073);
+		t
+	} else {
+		prog_col(n)
+	};
+	let img_hash = {
+		let elems: Vec<LF> = prog_table.iter().map(|&x| LF::from(x as u128)).collect();
+		let digest = hash_serialize::<LF, binius_hash::StdDigest>(&elems).expect("hash prog image");
+		let mut h = [0u64; 4];
+		for (i, w) in h.iter_mut().enumerate() {
+			let mut b = [0u8; 8];
+			b.copy_from_slice(&digest.as_slice()[i * 8..(i + 1) * 8]);
+			*w = u64::from_le_bytes(b);
+		}
+		h
+	};
 
 	// final 输出期望（排序后最小元素）
 	let final_val = trace.final_mem[OUT_ADDR as usize] as u64;
@@ -806,9 +859,9 @@ pub fn run_vmrs(n: usize, tamper: Tamper, expected_hash: Option<[u64; 4]>, word_
 		w[iref.d_val[j]] = Word(side[j].val);
 		w[iref.d_kind[j]] = Word(side[j].kind);
 	}
-	// 公开镜像哈希词（BadProgHash 坏例翻转一个词）
+	// 公开镜像哈希词（bad_hash=true 模拟 prover 填错哈希词，验证端对照拒）
 	let mut hash_words = img_hash;
-	if tamper == Tamper::BadProgHash {
+	if bad_hash {
 		hash_words[0] ^= 1;
 	}
 	for i in 0..4 {
@@ -822,11 +875,7 @@ pub fn run_vmrs(n: usize, tamper: Tamper, expected_hash: Option<[u64; 4]>, word_
 	cs.verify(&witness_vec).expect("native verify");
 	let inout_words = witness_vec.inout().to_vec();
 
-	// 公开哈希对照（M8-B T0，声明性公共输入）
-	let hash_ok = match expected_hash {
-		Some(exp) => hash_words == exp,
-		None => true,
-	};
+
 
 	// committed 列（事件侧 + 排序侧 ‖ pad）
 	let mut col_addr = vec![0u64; nrows];
@@ -848,8 +897,8 @@ pub fn run_vmrs(n: usize, tamper: Tamper, expected_hash: Option<[u64; 4]>, word_
 	let fb_ts = to_fb(&col_ts);
 	let fb_kind = to_fb(&col_kind);
 
-	let verifier = WordVerifier::<StdHashSuite>::setup(cs, 1).expect("verifier setup");
-	let prover = WordProver::<LP, StdHashSuite>::setup(verifier.clone()).expect("prover setup");
+	let verifier_for_prover = WordVerifier::<StdHashSuite>::setup(cs, 1).expect("verifier setup");
+	let prover = WordProver::<LP, StdHashSuite>::setup(verifier_for_prover.clone()).expect("prover setup");
 	let alloc = GlobalAllocator;
 	let mut pt = ProverTranscript::new(StdChallenger::default());
 	let t_fprove = std::time::Instant::now();
@@ -948,9 +997,37 @@ pub fn run_vmrs(n: usize, tamper: Tamper, expected_hash: Option<[u64; 4]>, word_
 	chan.finalize_oracle(o_kind, fb_kind);
 	chan.finish();
 	eprintln!("[phase] basefold+logup+fracadd (prover): {:?}", t0_chan.elapsed());
+	let sorted_ok = (0..n - 1).all(|i| trace.final_mem[BASE as usize + i] <= trace.final_mem[BASE as usize + i + 1]);
+	let proof_bytes = pt.finalize();
+	eprintln!("[phase] proof_bytes={}", proof_bytes.len());
+
+	VmRsProof { proof_bytes, inout_words, prog_hash: hash_words, n, t_len, ts, l, mp, stat, sorted_ok }
+}
+
+/// M10 T1：验证端——从 proof bytes 重建 transcript，完整跑 frontend verify + fetch logup
+/// + fracadd + oracle relations + finish；公开输入 = 镜像哈希对照 + inout（线性读入，
+/// succinctness 边界见 KNOWN_BOUNDARIES.md）。
+/// M10 v2 公开 API：verify(proof, expected_hash) -> 四层标志。
+/// Tamper 声明性检查固定 None（soundness 坏例经 crate 内 `vmrs_verify_impl`）。
+pub fn vmrs_verify(proof: &VmRsProof, expected_hash: Option<[u64; 4]>) -> VmRsVerifyOut {
+	vmrs_verify_impl(proof, Tamper::None, expected_hash)
+}
+
+/// 私有实现（含 tamper 钩子；公开签名见 [`vmrs_verify`]）。
+fn vmrs_verify_impl(proof: &VmRsProof, tamper: Tamper, expected_hash: Option<[u64; 4]>) -> VmRsVerifyOut {
+	let VmRsProof { proof_bytes, inout_words, prog_hash: hash_words, n: _, t_len, ts, l, mp, stat: _, sorted_ok: _ } = proof;
+	let t_len = *t_len;
+	let ts = *ts;
+	let l = *l;
+	let mp = *mp;
+	let inout_words = inout_words.clone();
+	// 重建约束系统（电路参数由 proof 元数据决定；与 prove 端逐门一致）
+	let (circuit, _) = build_circuit_vmrs(t_len, ts);
+	let verifier = WordVerifier::<StdHashSuite>::setup(circuit.constraint_system().clone(), 1).expect("verifier setup");
+	let alloc = GlobalAllocator;
 
 	// ---------- verifier ----------
-	let mut vt = pt.into_verifier();
+	let mut vt = VerifierTranscript::new(StdChallenger::default(), proof_bytes.clone());
 	let mut inout_verify: Vec<Word> = if tamper == Tamper::BadFinalOut {
 		let mut v = inout_words.clone();
 		v[IO_FINAL_OUT].0 ^= 1;
@@ -974,21 +1051,25 @@ pub fn run_vmrs(n: usize, tamper: Tamper, expected_hash: Option<[u64; 4]>, word_
 		})
 		.collect();
 	let s_ok = sortedness_ok(&pub_sorted);
+	// 公开哈希对照（M8-B T0）：Proof 携带的镜像哈希词 vs 验证端期望
+	let hash_ok = match expected_hash {
+		Some(exp) => *hash_words == exp,
+		None => true,
+	};
 	// leaf-claim 桥（M8-B T1）：验证端从 **公开 inout**（transcript 承诺）重算开口值，
 	// 对照 oracle relation claim → 公开列与 oracle 列在随机点 r 上逐元素绑定
 	// （两份列不一致 ⇒ 重算值 ≠ 承诺开口值 ⇒ den_check/relation 失配拒绝）。
-	let dot_pub = |sbase: usize, dbase: usize| -> LF {
-		let mut acc = LF::ZERO;
-		for (j, &ev) in eq_vals.iter().enumerate().take(2 * ts) {
-			let w = if j < ts { inout_verify[sbase + j].0 } else { inout_verify[dbase + (j - ts)].0 };
-			acc += ev * LF::from(w as u128);
-		}
-		acc
-	};
-	let addr_r_v = dot_pub(io_s_addr(t_len, ts), io_d_addr(t_len, ts));
-	let val_r_v = dot_pub(io_s_val(t_len, ts), io_d_val(t_len, ts));
-	let ts_r_v = dot_pub(io_s_ts(t_len, ts), io_d_ts(t_len, ts));
-	let kind_r_v = dot_pub(io_s_kind(t_len, ts), io_d_kind(t_len, ts));
+	// leaf-claim 桥（M8-B T1）：验证端从 **公开 inout**（transcript 承诺）重算开口值，
+	// 对照 oracle relation claim → 公开列与 oracle 列在随机点 r 上逐元素绑定
+	// （两份列不一致 ⇒ 重算值 ≠ 承诺开口值 ⇒ den_check/relation 失配拒绝）。
+	// 注意：eq_vals 由 l_ok 闭包内 vfinal.point 重建后传入——此处先声明占位由闭包捕获。
+	// leaf-claim 桥（M8-B T1）：验证端从 **公开 inout**（transcript 承诺）重算开口值，
+	// 对照 oracle relation claim → 公开列与 oracle 列在随机点 r 上逐元素绑定
+	// （两份列不一致 ⇒ 重算值 ≠ 承诺开口值 ⇒ den_check/relation 失配拒绝）。
+	// leaf-claim 桥（M8-B T1）：验证端从 **公开 inout**（transcript 承诺）重算开口值，
+	// 对照 oracle relation claim → 公开列与 oracle 列在随机点 r 上逐元素绑定
+	// （两份列不一致 ⇒ 重算值 ≠ 承诺开口值 ⇒ den_check/relation 失配拒绝）。
+	// 注意：eq_vals 由 l_ok 闭包内 vfinal.point 重建后传入——此处先声明占位由闭包捕获。
 	let merkle_veri = VerifierMerkleTranscriptChannel::<&mut VerifierTranscript<StdChallenger>, StdChallenger, LF, StdHashSuite>::new(&mut vt);
 	let v_specs = vec![
 		OracleSpec { log_msg_len: mp, is_zk: false },
@@ -997,7 +1078,18 @@ pub fn run_vmrs(n: usize, tamper: Tamper, expected_hash: Option<[u64; 4]>, word_
 		OracleSpec { log_msg_len: l, is_zk: false },
 		OracleSpec { log_msg_len: l, is_zk: false },
 	];
-	let mut vchan = BaseFoldVerifierChannel::new(merkle_veri, &v_specs, verifier_compiler.fri_params());
+	// M10 T1：验证端独立重建 compiler（fri_params 只依赖 specs 形状，与 prove 端一致）
+	let merkle_scheme_v = BinaryMerkleTreeScheme::<LF, StdHashSuite>::new();
+	let log_inv_rate_v = 1;
+	let arity_v = ConstantArityStrategy::with_optimal_arity::<LF, _>(&merkle_scheme_v, l + log_inv_rate_v).arity;
+	let verifier_compiler_v = BaseFoldVerifierCompiler::new(
+		&merkle_scheme_v,
+		v_specs.clone(),
+		log_inv_rate_v,
+		calculate_n_test_queries(100, log_inv_rate_v),
+		&ConstantArityStrategy::new(arity_v),
+	);
+	let mut vchan = BaseFoldVerifierChannel::new(merkle_veri, &v_specs, verifier_compiler_v.fri_params());
 	let v_o_prog = vchan.recv_oracle(mp, false).unwrap();
 	let v_o_addr = vchan.recv_oracle(l, false).unwrap();
 	let v_o_val = vchan.recv_oracle(l, false).unwrap();
@@ -1046,6 +1138,21 @@ pub fn run_vmrs(n: usize, tamper: Tamper, expected_hash: Option<[u64; 4]>, word_
 			Err(_) => return false,
 		};
 		let r: Vec<LF> = vfinal.point.clone();
+		let eq_r_v = eq_ind_partial_eval_in::<GlobalAllocator, LP>(&alloc, &r);
+		let eq_vals: Vec<LF> = eq_r_v.as_view().iter_scalars().collect();
+		// leaf-claim 桥：从公开 inout 按 vfinal.point 重算开口值（与 prove 端 committed 列对照）
+		let dot_pub = |sbase: usize, dbase: usize| -> LF {
+			let mut acc = LF::ZERO;
+			for (j, &ev) in eq_vals.iter().enumerate().take(2 * ts) {
+				let w = if j < ts { inout_verify[sbase + j].0 } else { inout_verify[dbase + (j - ts)].0 };
+				acc += ev * LF::from(w as u128);
+			}
+			acc
+		};
+		let addr_r_v = dot_pub(io_s_addr(t_len, ts), io_d_addr(t_len, ts));
+		let val_r_v = dot_pub(io_s_val(t_len, ts), io_d_val(t_len, ts));
+		let ts_r_v = dot_pub(io_s_ts(t_len, ts), io_d_ts(t_len, ts));
+		let kind_r_v = dot_pub(io_s_kind(t_len, ts), io_d_kind(t_len, ts));
 		let mut sum_eq = LF::ZERO;
 		for j in 0..2 * ts {
 			let mut e = LF::ONE;
@@ -1070,8 +1177,16 @@ pub fn run_vmrs(n: usize, tamper: Tamper, expected_hash: Option<[u64; 4]>, word_
 		ok_addr.is_ok() && ok_val.is_ok() && ok_ts.is_ok() && ok_kind.is_ok()
 	})(&mut vchan) && match vchan.finish() { Ok(_) => true, Err(_) => false };
 
-	let sorted_ok = (0..n - 1).all(|i| trace.final_mem[BASE as usize + i] <= trace.final_mem[BASE as usize + i + 1]);
-	VmRsRun { c_ok, l_ok, hash_ok, s_ok, stat, t_len, ts, l, inout_words, prover, verifier, witness: witness_vec, sorted_ok }
+	VmRsVerifyOut { c_ok, l_ok, hash_ok, s_ok }
+}
+
+/// M10 T1 兼容包装（仅测试使用）：prove + verify 两段串跑，逐数字一致。
+#[cfg(test)]
+pub(crate) fn run_vmrs(n: usize, tamper: Tamper, expected_hash: Option<[u64; 4]>, word_overrides: &[(u64, u64)]) -> VmRsRun {
+	let proof = vmrs_prove_impl(n, word_overrides, None, tamper == Tamper::BadProgHash);
+	let sorted_ok = proof.sorted_ok;
+	let v = vmrs_verify_impl(&proof, tamper, expected_hash);
+	VmRsRun { c_ok: v.c_ok, l_ok: v.l_ok, hash_ok: v.hash_ok, s_ok: v.s_ok, stat: proof.stat, t_len: proof.t_len, ts: proof.ts, l: proof.l, inout_words: proof.inout_words, prover: (), verifier: (), witness: (), sorted_ok }
 }
 
 #[cfg(test)]
@@ -1121,6 +1236,25 @@ mod tests {
 		let dt = t0.elapsed().as_secs_f32();
 		show(&run, &format!("scale N=32 ({dt:.1}s)"));
 		assert!(run.sorted_ok && run.c_ok && run.l_ok && run.hash_ok);
+	}
+
+	/// M10 T1：公共 API 端到端——prove(program) → Proof bytes → verify（独立 transcript 重建）。
+	#[test]
+	fn vm_ram_sort_api_end_to_end() {
+		// 内置程序：prove → bytes → verify 全绿
+		let proof = vmrs_prove(16, None);
+		assert!(proof.sorted_ok);
+		let h = proof.prog_hash;
+		let v = vmrs_verify(&proof, Some(h));
+		assert!(v.c_ok && v.l_ok && v.hash_ok && v.s_ok, "API 端到端（bytes 重建）必须全绿");
+		// 自定义程序镜像（非内置 bubblesort）：仅证明 fetch/表/哈希跟随镜像
+		let img: Vec<u64> = prog_col(16);
+		let proof2 = vmrs_prove(16, Some(&img));
+		let v2 = vmrs_verify(&proof2, Some(proof2.prog_hash));
+		assert!(v2.c_ok && v2.l_ok && v2.hash_ok && v2.s_ok, "注入镜像的 API 端到端必须全绿");
+		// 哈希不符拒
+		let v3 = vmrs_verify(&proof, Some([1, 2, 3, 4]));
+		assert!(!v3.hash_ok, "API verify 的哈希对照必须拒绝不符值");
 	}
 
 	/// M9 T0/T1：N=64（M8-A 时电路构建 OOM/SIGKILL 的规模）。

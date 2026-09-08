@@ -1,3 +1,5 @@
+> 【历史归档】M-A2 时代工作已被统一里程碑（M1-M6）取代，仅作历史证据保留。
+
 # M-A2 Handoff: 指令门 R1CS + Ligerito prove/verify
 
 ## 一句话目标

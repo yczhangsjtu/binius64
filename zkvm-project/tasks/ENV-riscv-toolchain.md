@@ -16,7 +16,9 @@
 3. **验收**：`riscv64-unknown-elf-gcc -march=rv32im -mabi=ilp32 -nostdlib hello.c -o hello.elf`
    能产出 ELF32 文件（`file hello.elf` 显示 ELF 32-bit LSB, RISC-V）。
 4. **环境注意**：本机 Rust 用 rustup（`~/.cargo/bin` 前置 PATH，rust-toolchain.toml 钉 1.97.1）；
-   系统 /usr/bin/cargo 是 1.75，不要动它；安装用 apt 需 sudo（请用户授权或代执行）。
+   系统 apt 版 cargo/rustc 1.75 已于 2026-09-08 卸载，rustup 为唯一工具链（勿再 apt 重装到 /usr/bin）。
+   ✅ 本需求已于 2026-09-08 达成：gcc-riscv64-unknown-elf 13.2.0 已装，`-march=rv32im -mabi=ilp32 -nostdlib`
+   验收产出 ELF32 RISC-V 通过。
 5. **替代交付**（若不便安装）：在任何有工具链的机器上编译几个测试 ELF（riscv32im、裸机、
    静态、无压缩指令集扩展 `-march=rv32im` 不含 c），把二进制交付到
    `crates/zkvm-slice/testdata/`。

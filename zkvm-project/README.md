@@ -66,7 +66,7 @@ demonstrating one zkVM mechanism on a binary field. Slices live under
 > 约束）。见 `ACCEPTANCE_BASIS.md` / `ACCEPTANCE_REPORT.md`。
 
 
-## Current state (2026-09-08, M1-M7 + M8-A complete; Phase 2 in progress)
+## Current state (2026-09-08, Phase 2 complete except riscv32 toolchain)
 
 - **Phase 1 (M1-M6) ✅** (see `designs/milestone-roadmap.md` §4 and the M1..M6 reports).
   Slices 24-26 (`word_vm` / `word_vm_ram` / `word_vm32`) form the modern evidence chain:
@@ -78,7 +78,14 @@ demonstrating one zkVM mechanism on a binary field. Slices live under
   **M8-A ✅** — slice 28 (`vm_ram_sort`): VM × RAM argument integration on the **BaseFold
   strong commitment channel**, O(K·T) version chain deleted, K=2^16 words, bubblesort
   end-to-end prove→verify + 4 verify-layer soundness rejections (`M8_REPORT.md`).
-  Next: M8-B (full ISA + riscv32 toolchain + compiled programs).
+  **M8-B ◐** — T0 fetch argument + program publicity, T1 leaf-claim bridge, T2 ISA
+  extension (mul/div/rem + byte/half loads, stores) all done; T3 (riscv32 toolchain)
+  pending external dependency (`M8B_REPORT.md`).
+  **M9 ✅** — release scaling curves (gates strictly linear at 502.3/cycle, prove ~linear),
+  N=64 unblocked, per-inst release cost table (`M9_REPORT.md`).
+  **M10 ✅** — public API (`vmrs_prove`/`vmrs_verify`, proof = transcript bytes),
+  CI script `tools/run_zkvm_tests.sh`, boundary/threat-model pages (`M10_REPORT.md`).
+  Known boundaries: `KNOWN_BOUNDARIES.md`. Security review prep: `SECURITY_REVIEW_PREP.md`.
 - **Thesis evidence**: `zkvm-project/BENCHMARKS.md` — per-instruction cost table for all
   31 RV32I instructions (N=16 micro-programs, full prove+verify): **30/31 rows identical
   (gates=22388, g/cyc=973)**; instruction type does not affect per-cycle cost.

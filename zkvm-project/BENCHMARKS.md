@@ -33,6 +33,10 @@
 > 与指令是否出现无关（全展开 mux 结构，同 M5 惯例）。
 > vm_ram_sort（N=16）在 T0/T1 公开化后：inout 1 词 → ~18.5k 词（inst/pc/排序流 8 列），
 > gates 905,168（+fetch logup/oracle relation 开销 <5%），honest prove 1.9s。
+> **Proof 体积**（M10 T1，`ProverTranscript::finalize` bytes，含 frontend+Spartan+BaseFold/
+> logup/fracadd 全部消息）：**~557KB @N=16**（T=1801、gates=905,168；随 T 近线性，
+> 主导项 = BaseFold FRI 开口与 Spartan 证明消息）。口径：debug profile，`[phase]
+> proof_bytes=` 日志输出（`vm_ram_sort_api_end_to_end` 测试可复现）。
 
 ## 每指令成本表（真实运行输出，2026-09-07）
 
