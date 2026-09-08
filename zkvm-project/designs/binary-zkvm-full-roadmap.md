@@ -79,10 +79,14 @@ M4 的版本链把 64 个计数器放进电路（O(K·T) gates），K=2^20 时�
 
 | 里程碑 | 内容 | 验收标准 | 依赖 |
 |---|---|---|---|
-| **M7** | **可扩展 RAM 论证 spike**：路线 A（排序式）与路线 B（Twist 翻译）各一切片，K=2^16、T≥2^12 | 两路线的 gates/prove-time 随 K、T 缩放实测曲线；明确选型 + 报告 | M4 机制 |
-| **M8** | **完整 ISA + 真实工具链**：mul/div/字节访存/ecall 最小 I/O；riscv32 工具链编译 C/Rust → ELF → tracer → trace；跑真实编译程序（如排序/哈希/斐波那契） | 编译的 C 程序端到端 prove→verify；与参考模拟器逐指令对拍 | M7（RAM 选型）、M5 |
+| **M7** | **可扩展 RAM 论证 spike**：路线 A（排序式）与路线 B（Twist 翻译）各一切片，K=2^16、T≥2^12 | 两路线的 gates/prove-time 随 K、T 缩放实测曲线；明确选型 + 报告 | **✅ 已完成（2026-09-08，v2）**：路线 A 胜（切片 27 `ram_sort`）；gates 与 K 完全无关（0 方差）、随 T 线性（×3.93）；fracaddcheck 自组装值多重集合等式；`M7_REPORT.md` |
+| **M8-A** | **VM × RAM 论证整合 + 强承诺通道**（M8 上半）：ram_sort 迁移 BaseFold 通道；vm32 执行核心 + 排序式 RAM 论证接入（删 O(K·T) 版本链）；恒等式②强绑定；K=2^16 | 强通道证据；1024 字排序端到端；4 例 verify 层 soundness | 任务书 `tasks/M8-A-vm-ram-integration.md` |
+| **M8-B** | **完整 ISA + 真实工具链**（M8 下半）：mul/div/字节访存/ecall 最小 I/O；riscv32 工具链编译 C/Rust → ELF → tracer → trace；跑真实编译程序 | 编译的 C 程序端到端 prove→verify；与参考模拟器逐指令对拍 | M8-A、M5；M8-A 验收后发任务书 |
 | **M9** | **性能工程**：release 基准、witness 生成优化、并行化；产出"成本 vs 指令数"缩放曲线（thesis 的最终定量证据） | T=2^10..2^20 的 prove 时间/gates 曲线；每指令成本表（release） | M8 |
 | **M10** | **工程化收官**：库 API 化（prove(program, input)→proof）、CI、文档、安全审查准备 | 外部调用者可 API 驱动；文档完整 | M9 |
+
+> 注（2026-09-08）：M8 按关键路径拆为 M8-A（RAM 论证整合 + 强通道，协议风险集中于此）
+> 与 M8-B（ISA 补全 + 工具链，纯工程）。
 
 **明确不在 Phase 2**（另立阶段，需要时再议）：ZK（Binius64 的 zk_mlecheck 路线）、
 递归/证明聚合、RV64、(B) 移植 Jolt 代码库。
@@ -102,4 +106,4 @@ M4 的版本链把 64 个计数器放进电路（O(K·T) gates），K=2^20 时�
 - `designs/milestone-roadmap.md`（M1-M6）保持不变，标记为 Phase 1（切片验证）。
 - M7-M10 的任务书在各自启动时生成（同 M2-M6 模式：Leader 写任务书 → Worker 实现 →
   Leader 验收）。
-- 当前状态：M6 进行中（固化 + 基准）。**M7 任务书在 M6 验收通过后生成。**
+- 当前状态（2026-09-08）：M1-M7 ✅；M8-A 任务书已发（`tasks/M8-A-vm-ram-integration.md`）。
