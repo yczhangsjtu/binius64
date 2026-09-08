@@ -7,6 +7,17 @@
 > 全门级 prove + 三表 logup* + verify（全部 `c_ok=true l_ok=true`），记录 CircuitStat 与耗时。
 > 复现：`cargo test -p binius-zkvm-slice --lib -- --ignored --nocapture bench_instruction`。
 
+## M8-C：首个真实编译程序数据点（2026-09-08）
+
+> C（rv32im, gcc 13.2.0, -nostdlib）→ ELF32 → `vm32::elf` 加载 → tracer → `vmrs_prove_with_init`
+> → `vmrs_verify`。程序：16 元素 bubblesort（含重复/边界值 0x80000000、0xffffffff），
+> .data 初始镜像非零（init 非零化协议首用）。复现：`cargo test --lib vm_ram_sort_elf -- --nocapture`。
+
+| 程序 | cyc | ts | l | gates | 结果 |
+|---|---|---|---|---|---|
+| **bubble16.elf（真实编译）** | 863 | 898 | 11 | **430,700** | prove→verify 全绿 + Rust 独立参考对拍一致 |
+| fib.elf（同 init 环境） | — | — | — | — | 端到端全绿；换产物哈希对照拒 |
+
 ## M9：release 缩放曲线（thesis 最终定量证据，2026-09-08）
 
 > `--release` + RUSTFLAGS=native，串行单进程。复现：`cargo test --release -p binius-zkvm-slice

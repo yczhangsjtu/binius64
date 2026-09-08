@@ -1,0 +1,28 @@
+
+bubble16.elf:     file format elf32-littleriscv
+
+
+Disassembly of section .text:
+
+00000000 <_start>:
+   0:	000015b7          	lui	a1,0x1
+   4:	05458593          	addi	a1,a1,84 # 1054 <arr>
+   8:	03c58613          	addi	a2,a1,60
+   c:	02c0006f          	j	38 <_start+0x38>
+  10:	00478793          	addi	a5,a5,4
+  14:	00c78e63          	beq	a5,a2,30 <_start+0x30>
+  18:	0007a703          	lw	a4,0(a5)
+  1c:	0047a683          	lw	a3,4(a5)
+  20:	fee6f8e3          	bgeu	a3,a4,10 <_start+0x10>
+  24:	00d7a023          	sw	a3,0(a5)
+  28:	00e7a223          	sw	a4,4(a5)
+  2c:	fe5ff06f          	j	10 <_start+0x10>
+  30:	ffc60613          	addi	a2,a2,-4
+  34:	00b60663          	beq	a2,a1,40 <_start+0x40>
+  38:	00058793          	mv	a5,a1
+  3c:	fddff06f          	j	18 <_start+0x18>
+  40:	c0de67b7          	lui	a5,0xc0de6
+  44:	00d78793          	addi	a5,a5,13 # c0de600d <__global_pointer$+0xc0de47b9>
+  48:	40f02023          	sw	a5,1024(zero) # 400 <_start+0x400>
+  4c:	00000073          	.word	0x00000073
+  50:	00008067          	ret

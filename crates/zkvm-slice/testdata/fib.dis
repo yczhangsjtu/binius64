@@ -1,0 +1,18 @@
+
+fib.elf:     file format elf32-littleriscv
+
+
+Disassembly of section .text:
+
+00000000 <_start>:
+   0:	00c00713          	li	a4,12
+   4:	00100793          	li	a5,1
+   8:	00000613          	li	a2,0
+   c:	00078693          	mv	a3,a5
+  10:	00c787b3          	add	a5,a5,a2
+  14:	fff70713          	addi	a4,a4,-1
+  18:	00068613          	mv	a2,a3
+  1c:	fe0718e3          	bnez	a4,c <_start+0xc>
+  20:	40d02023          	sw	a3,1024(zero) # 400 <_start+0x400>
+  24:	00000073          	.word	0x00000073
+  28:	00008067          	ret

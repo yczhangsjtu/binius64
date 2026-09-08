@@ -1,4 +1,6 @@
-> 【已执行归档 2026-09-08】T0-T2 已完成（M8B_REPORT.md）；T3 工具链仍待外部依赖，本文件方案段仍有效。
+> 【已执行归档 2026-09-08】T0-T2 已完成（M8B_REPORT.md）；T3 工具链已由 **M8-C 完成**
+> （`M8C_REPORT.md`：ELF 加载器 vm32/elf.rs、tracer 字节地址统一、真实编译程序端到端），
+> 本文件仅作历史记录（方案段与 M8-C 实现的差异：ELF parser 为手写最小实现而非 object crate）。
 
 # Handoff: M8-B 剩余工作（T3 真实工具链）
 

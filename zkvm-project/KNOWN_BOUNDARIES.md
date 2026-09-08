@@ -4,9 +4,11 @@
 
 ## 证明语义边界
 
-1. **init 镜像全 0 假设**：vm_ram_sort 的初始内存 = 全 0（init 记录 val==0 电路断言 +
-   排序流 init 行）。非零初始镜像（如 ELF 数据段）需把 init 值纳入公共输入（T3 工具链的
-   ELF loader 一并处理），当前引擎不接受。
+1. **init 镜像全 0 假设——✅ 已解除（M8-C）**：`vmrs_prove_with_init` 接受非零初始镜像
+   （ELF LOAD 段加载结果）；init 行 val = 镜像词，对照链 = init_vals 公开列（transcript
+   承诺）← 验证端本地对照 ← proof.init_words ← Sha256 ← proof.init_hash（外部与 ELF 加载
+   结果比对，同 expected_hash 的公共输入锚模式）。soundness：篡改 init_words → s_ok=false
+   （`vm_ram_sort_elf_bubble16_e2e` 内置）。内置 bubblesort 无参路径仍为全 0 快捷。
 2. **fetch 哈希↔承诺 root 同源**：公开程序哈希（Sha256 of 镜像列，inout 词）与 BaseFold
    承诺 root 的等式由"同数据+同确定性套件"保证（诚实路径）；对抗强制需验证端读承诺 root
    对照——上游 `BaseFoldVerifierChannel.oracle_commitments` 私有，建议加只读 getter。

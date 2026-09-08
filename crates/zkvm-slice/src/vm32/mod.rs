@@ -6,6 +6,7 @@
 //! - [`circuit`] — gate-circuit builder (`build_circuit`) + inout layout
 //! - [`proof`] — proof pipeline (`run_machine_full`, reverify, claims, wlogs)
 pub mod isa;
+pub mod elf;
 pub mod interp;
 pub mod circuit;
 pub mod proof;
