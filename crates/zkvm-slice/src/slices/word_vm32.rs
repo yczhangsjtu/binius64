@@ -382,3 +382,107 @@ mod m8b_tests {
 		assert!(run.c_ok && run.l_ok, "M8-B ISA 微程序端到端 prove→verify 必须通过");
 	}
 }
+
+#[cfg(test)]
+mod m12_tests {
+	use super::*;
+	#[allow(unused_imports)]
+	use crate::vm32::isa::*;
+	use crate::vm32::interp::run_program;
+	use crate::vm32::proof::run_machine_full;
+
+	fn fetch_halt(_: u64) -> u64 { 0x00000073 }
+
+	/// M12-T3（M1 PoC/对拍）：非标 LOAD funct3=3（旧语义：interp panic / 电路当半字 load）。
+	/// 修复后：两层统一为 NOP——interp 无写回，同 trace 电路全绿（一致性对拍）。
+	#[test]
+	fn m12_m1_nonstandard_load_nop() {
+		let mut prog: Vec<(u64, u64)> = Vec::new();
+		let mut at = 0x00u64;
+		// x1 = 42；x2 = 非标 load（funct3=3）的结果（修复前：电路当 load/interp panic；修复后：x2 不被写）
+		prog.push((at, lhs_lui(1, 0))); at += 4;
+		prog.push((at, addi(1, 1, 42))); at += 4;
+		let bogus = crate::vm32::isa::enc_i(OP_LOAD, 0x3, 2, 1, 0);
+		prog.push((at, bogus)); at += 4;
+		prog.push((at, jal(0, 0xc4 - at)));
+		let tr = run_program(&[0u32; NRAM], &prog, &[], fetch_halt);
+		assert!(tr.final_regs[1] == 42);
+		assert!(tr.cycles[2].load.is_none(), "非标 load 无内存事件");
+		assert!(tr.final_regs[2] == 0, "非标 load = NOP（x2 不被写）");
+		// 同 trace 电路全绿（两层语义一致）
+		let run = run_machine_full([0u32; NREG], &[0u32; NRAM], &prog, &[], fetch_halt);
+		assert!(run.c_ok && run.l_ok, "非标 load 的 NOP 语义必须可证明");
+	}
+
+	/// M12-T3（M1）：非标 STORE funct3=6 → 两层统一 NOP。
+	#[test]
+	fn m12_m1_nonstandard_store_nop() {
+		let mut prog: Vec<(u64, u64)> = Vec::new();
+		let mut at = 0x00u64;
+		prog.push((at, lhs_lui(1, 0))); at += 4;
+		prog.push((at, addi(1, 1, 7))); at += 4;
+		let bogus = crate::vm32::isa::enc_s(OP_STORE, 0x6, 1, 1, 0);
+		prog.push((at, bogus)); at += 4;
+		prog.push((at, lhs_lw(2, 0, 1))); at += 4; // 读回字 1（若非标 store 生效应 ≠ 0）
+		prog.push((at, jal(0, 0xc4 - at)));
+		let tr = run_program(&[0u32; NRAM], &prog, &[], fetch_halt);
+		assert!(tr.cycles[2].store.is_none(), "非标 store 无内存事件");
+		assert!(tr.final_regs[2] == 0, "非标 store = NOP（内存未变）");
+		let run = run_machine_full([0u32; NREG], &[0u32; NRAM], &prog, &[], fetch_halt);
+		assert!(run.c_ok && run.l_ok, "非标 store 的 NOP 语义必须可证明");
+	}
+
+	/// M12-T3（M2）：sh 奇地址 → interp panic（电路 sh_align 断言镜像）。
+	/// 修复前：interp 静默按对齐半字写入、电路无断言（isa.rs 虚标已做）。
+	#[test]
+	fn m12_m2_sh_misaligned_rejected() {
+		let mut prog: Vec<(u64, u64)> = Vec::new();
+		let mut at = 0x00u64;
+		prog.push((at, lhs_lui(1, 0))); at += 4;
+		prog.push((at, addi(1, 1, 17))); at += 4; // 字节地址 17（奇）
+		prog.push((at, sh(0, 1, 0))); at += 4;
+		prog.push((at, jal(0, 0xc4 - at)));
+		let result = std::panic::catch_unwind(|| {
+			run_program(&[0u32; NRAM], &prog, &[], fetch_halt)
+		});
+		assert!(result.is_err(), "M2：sh 奇地址必须被 interp 拒绝（修复前静默对齐写入）");
+	}
+
+	/// M12-T3（M3）：程序哈希对照——committed fetch 表的声明性哈希随程序内容变化。
+	#[test]
+	fn m12_m3_prog_hash_binding() {
+		let mut prog: Vec<(u64, u64)> = Vec::new();
+		let mut at = 0x00u64;
+		prog.push((at, lhs_lui(1, 0))); at += 4;
+		prog.push((at, addi(1, 1, 5))); at += 4;
+		prog.push((at, jal(0, 0xc4 - at)));
+		let honest = run_machine_full([0u32; NREG], &[0u32; NRAM], &prog, &[], fetch_halt);
+		// 换程序（同形状）：committed fetch 表不同 → 哈希不同 → 调用方对照可检出
+		let mut prog2: Vec<(u64, u64)> = prog.clone();
+		prog2[1] = (prog2[1].0, addi(1, 1, 6));
+		let other = run_machine_full([0u32; NREG], &[0u32; NRAM], &prog2, &[], fetch_halt);
+		assert_ne!(honest.prog_hash, other.prog_hash, "M3：不同程序的 fetch 表哈希必须不同");
+		let again = run_machine_full([0u32; NREG], &[0u32; NRAM], &prog, &[], fetch_halt);
+		assert_eq!(honest.prog_hash, again.prog_hash, "M3：同程序哈希必须稳定");
+	}
+
+	/// M12-T3：lh（有符号半字）e2e——负半字符号扩展 + prove→verify。
+	#[test]
+	fn m12_lh_sign_extend_e2e() {
+		let mut init = [0u32; NRAM];
+		init[8] = 0x8765_4321; // 字 8：半字 0 = 0x4321（正），半字 1 = 0x8765（负）
+		let mut prog: Vec<(u64, u64)> = Vec::new();
+		let mut at = 0x00u64;
+		prog.push((at, lhs_lui(1, 0))); at += 4;
+		prog.push((at, addi(1, 1, 32))); at += 4; // 字节地址 32 = 字 8 半字 0
+		prog.push((at, lh(2, 1, 0))); at += 4; // x2 = 0x4321
+		prog.push((at, addi(1, 1, 2))); at += 4; // 字节地址 34 = 字 8 半字 1
+		prog.push((at, lh(3, 1, 0))); at += 4; // x3 = 0xffff8765（符号扩展）
+		prog.push((at, jal(0, 0xc4 - at)));
+		let tr = run_program(&init, &prog, &[], fetch_halt);
+		assert_eq!(tr.final_regs[2], 0x4321, "lh 正半字零扩展到 32 位 lane");
+		assert_eq!(tr.final_regs[3], 0xffff_8765, "lh 负半字符号扩展");
+		let run = run_machine_full([0u32; NREG], &init, &prog, &[], fetch_halt);
+		assert!(run.c_ok && run.l_ok, "lh e2e prove→verify 必须通过");
+	}
+}

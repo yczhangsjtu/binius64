@@ -63,6 +63,11 @@ pub fn run_program(init_mem: &[u32; NRAM], word_overrides: &[(u64, u64)], load_o
 		let byte_word_index = |addr: u64| ((addr >> 2) as usize) % NRAM;
 		let mut ld_wb: Option<u32> = None; // 写回值（byte/half load 的提取结果）
 		if opcode == OP_LOAD && matches!(funct3, F3_LB | F3_LBU | F3_LH | F3_LHU) {
+			// M12-T3（M2）：lh/lhu 半字对齐（addr[0]==0）——与电路 lh_align 断言镜像；
+			// 修复前 interp 静默按对齐半字取值而电路拒绝（两层分歧）。
+			if matches!(funct3, F3_LH | F3_LHU) && addr_calc & 1 != 0 {
+				panic!("M12-T3 M2: lh/lhu 半字地址未对齐 (addr[0]=1)");
+			}
 			// M8-B T2：事件列记录整字 raw（RAM 字粒度，与排序论证 val_cons 一致）；提取在写回级。
 			let ld_addr = byte_word_index(addr_calc);
 			let v = ramver[ld_addr];
@@ -87,6 +92,10 @@ pub fn run_program(init_mem: &[u32; NRAM], word_overrides: &[(u64, u64)], load_o
 			// 读事件走 RAM 论证的读语义（ver=v），写事件 ver=v+1——版本链与 val_cons
 			// （同地址读值一致链：旧字读行 → 新字写行）无需修改排序论证。
 			let st_addr = (a.wrapping_add(imm_s as u64)) & 0xffffffff;
+			// M12-T3（M2）：sh 半字对齐（addr[0]==0）——与电路 sh_align 断言镜像（修复前虚标已做）。
+			if funct3 == F3_SH && st_addr & 1 != 0 {
+				panic!("M12-T3 M2: sh 半字地址未对齐 (addr[0]=1)");
+			}
 			let st_wi = byte_word_index(st_addr);
 			let v_old = ramver[st_wi];
 			let old = mem[st_wi];
@@ -226,8 +235,10 @@ pub fn run_program(init_mem: &[u32; NRAM], word_overrides: &[(u64, u64)], load_o
 		} else if opcode == OP_JAL || opcode == OP_JALR {
 			alu_sum = (pc as u32).wrapping_add(4);
 			is_alu_write = true;
-		} else if opcode == OP_LOAD {
-			// M8-B T2：lb/lbu/lh/lhu 写回提取值（ld_wb），lw 写回整字
+		} else if opcode == OP_LOAD && load.is_some() {
+			// M8-B T2：lb/lbu/lh/lhu 写回提取值（ld_wb），lw 写回整字。
+			// M12-T3（M1）：非标 funct3 ∈ {3,6,7} 的 load 无事件 → NOP（与电路同步；
+			// 修复前此处 `load.unwrap()` 直接 panic）。
 			alu_sum = ld_wb.unwrap_or_else(|| load.unwrap().val);
 			is_alu_write = true;
 		}

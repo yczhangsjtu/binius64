@@ -34,6 +34,21 @@ pub fn build_fetch_prog(fetch: fn(u64) -> u64, word_overrides: &[(u64, u64)]) ->
 	prog
 }
 
+/// M12-T3（M3）：fetch 表哈希（StdDigest over 序列化表列 → 4×u64 LE）。
+/// vm32 引擎的程序绑定锚：committed fetch 表（logup 表）的声明性哈希，
+/// 调用方（statement 层）与期望程序镜像对照——与 vm_ram_sort 的 prog_hash 同层级。
+pub fn fetch_table_hash(prog: &[u64]) -> [u64; 4] {
+	let elems: Vec<LF> = prog.iter().map(|&v| LF::from(v as u128)).collect();
+	let digest = binius_hash::hash_serialize::<LF, binius_hash::StdDigest>(&elems).expect("hash fetch table");
+	let mut h = [0u64; 4];
+	for (i, w) in h.iter_mut().enumerate() {
+		let mut b = [0u8; 8];
+		b.copy_from_slice(&digest.as_slice()[i * 8..(i + 1) * 8]);
+		*w = u64::from_le_bytes(b);
+	}
+	h
+}
+
 pub fn build_reg_wlog(init: &[u32; NREG], trace: &Trace) -> Vec<u64> {
 	let mut w = vec![0u64; NREG * VER_MAX];
 	for r in 0..NREG { w[r * VER_MAX + 0] = init[r] as u64; }
@@ -76,6 +91,8 @@ pub fn claims_from_inout(inout_words: &[Word], t_len: usize) -> (Vec<Vec<usize>>
 pub struct M5Run {
 	pub c_ok: bool,
 	pub l_ok: bool,
+	/// M12-T3（M3）：committed fetch 表的声明性哈希（调用方对照期望程序镜像）。
+	pub prog_hash: [u64; 4],
 	pub stat: CircuitStat,
 	pub t_len: usize,
 	pub inout_words: Vec<Word>,
@@ -155,6 +172,7 @@ fn run_machine_full_impl(init: [u32; NREG], init_mem: &[u32; NRAM], word_overrid
 	let inout_words = witness_vec.inout().to_vec();
 	let (fetch_idxs, fetch_claims, reg_idxs, reg_claims, ram_idxs, ram_claims) = claims_from_inout(&inout_words, t_len);
 	let prog = build_fetch_prog(fetch, word_overrides);
+	let prog_hash = fetch_table_hash(&prog);
 	let fv = FieldBuffer::from_values(&prog.iter().map(|&v| LF::from(v as u128)).collect::<Vec<_>>());
 	let reg_wlog = build_reg_wlog(&init, &trace);
 	let rv = FieldBuffer::from_values(&reg_wlog.iter().map(|&v| LF::from(v as u128)).collect::<Vec<_>>());
@@ -188,7 +206,7 @@ fn run_machine_full_impl(init: [u32; NREG], init_mem: &[u32; NRAM], word_overrid
 		}
 		logup_star::verify_reduction::<LF, _>(&vg, v_tables, &mut vt).is_ok()
 	} else { false };
-	M5Run { c_ok: circuit_ok, l_ok: logup_ok, stat, t_len, inout_words, reg_wlog, ram_wlog, trace, prover, verifier, witness: witness_vec }
+	M5Run { c_ok: circuit_ok, l_ok: logup_ok, prog_hash, stat, t_len, inout_words, reg_wlog, ram_wlog, trace, prover, verifier, witness: witness_vec }
 }
 pub fn reverify2(run: &M5Run, bad_inout: &[Word]) -> (bool, bool) {
 	let mut bt = ProverTranscript::new(StdChallenger::default());

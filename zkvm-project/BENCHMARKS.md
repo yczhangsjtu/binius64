@@ -7,6 +7,26 @@
 > 全门级 prove + 三表 logup* + verify（全部 `c_ok=true l_ok=true`），记录 CircuitStat 与耗时。
 > 复现：`cargo test -p binius-zkvm-slice --lib -- --ignored --nocapture bench_instruction`。
 
+## M12：预处理模型 succinct——公开 IO 恒定表 + 在线验证耗时（2026-09-08）
+
+> 复现：`cargo test -p binius-zkvm-slice -- --ignored --nocapture vm_ram_sort_scale`（release 曲线
+> 为 dev profile 数字，与 M9 口径一致）。公开 IO = `VmRsProof.inout_words.len()`（24 词恒定）。
+
+| N | T（周期） | ts | l | gates（zero/and/bmul） | **公开 IO 词数** | honest prove | **online verify** | proof 体积 |
+|---|---|---|---|---|---|---|---|---|
+| 16 | 1,801 | 1,834 | 12 | 990,586（44,988/277,745/308,885） | **24** | ~5.7s | ~81ms | 603,888 B |
+| 32 | 6,973 | 7,038 | 14 | 3,890,926（177,856/1,074,713/1,214,445） | **24** | 13.8s | 52ms | — |
+| 64 | 27,343 | 27,472 | 16 | 15,259,032（696,961/4,212,653/4,764,587） | **24** | 51.5s | 242ms | 1,124,512 B |
+
+- **公开输入与 T 无关**（M12-T1 硬指标）：24 词 = 程序哈希×4 + init 哈希×4 + 输出 +
+  输出地址 + χ 挑战×2 + 6 个 χ-dot 声明×12。M11 前为 O(T)（~18.5k 词 @N=16）。
+- **online verify 不含电路重建**（`vmrs_verify_online`；一次性预处理 = 电路构建，
+  N=64 实测 20.5s）。online 耗时 = frontend verify + fetch logup + fracadd + 批量开点。
+- 门数增量 vs M9（+9.4% @N=16）：χ-dot 锚（bmul +10.6%）+ uniform 事件钉扎 +
+  final_unique/ecall 断言——succinct 化的结构成本。
+- proof 体积仍随 T 线性（**非无条件 succinct**；递归/聚合属 Phase 3）。
+- ELF bubble16（M8-C 数据点的 M12 复测）：cycles=863, gates=483,232, io=24, 全绿。
+
 ## M8-C：首个真实编译程序数据点（2026-09-08）
 
 > C（rv32im, gcc 13.2.0, -nostdlib）→ ELF32 → `vm32::elf` 加载 → tracer → `vmrs_prove_with_init`

@@ -97,6 +97,10 @@ pub fn parse_elf32(bytes: &[u8]) -> Result<ElfImage, String> {
 		if p_type != PT_LOAD || p_filesz == 0 {
 			continue;
 		}
+		// M12-T3：非 4 对齐 vaddr 的折叠会把跨字字节错位放置——显式拒绝（边界声明）。
+		if p_vaddr % 4 != 0 {
+			return Err("elf: PT_LOAD vaddr not 4-aligned (unsupported; bytes would fold across words)".into());
+		}
 		let executable = p_flags & 0x1 != 0; // PF_X
 		r.pos = p_offset;
 		let data = r.bytes(p_filesz)?;
@@ -134,6 +138,10 @@ pub fn parse_elf32(bytes: &[u8]) -> Result<ElfImage, String> {
 			let _ = sh_name;
 			if sh_type != SHT_PROGBITS || (sh_flags & SHF_EXECINSTR) == 0 || (sh_flags & SHF_ALLOC) == 0 {
 				continue;
+			}
+			// M12-T3：同上——section 地址须 4 对齐（仅对参与镜像的 PROGBITS+AX 段生效）。
+			if sh_addr % 4 != 0 {
+				return Err("elf: PROGBITS section addr not 4-aligned (unsupported)".into());
 			}
 			r.pos = sh_offset;
 			let data = r.bytes(sh_size)?;

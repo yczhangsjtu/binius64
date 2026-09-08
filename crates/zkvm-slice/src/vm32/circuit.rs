@@ -203,11 +203,16 @@ pub fn build_circuit(trace: &Trace) -> (Circuit, InoutRefs) {
 		let is_jal = eq_opcode(OP_JAL);
 		let is_jalr = eq_opcode(OP_JALR);
 		let is_branch = eq_opcode(OP_BRANCH);
-		let c_is_load = eq_opcode(OP_LOAD); // M8-B T2：lb/lbu/lh/lhu/lw 全家
-		let c_is_store = eq_opcode(OP_STORE); // M9 T2：sb/sh/sw 全家
-		let is_byte_load = b.band(eq_opcode(OP_LOAD), b.bnot(b.icmp_eq(funct3, b.add_constant_64(0x2))));
+		// M12-T3（M1）：非标 LOAD/STORE funct3 ∈ {3,6,7} 统一为 NOP（interp 同步）——
+		// 修复前电路把 funct3=3 当半字 load、interp 直接 panic（同指令两套语义，审计 M1）。
+		let f3_low2 = b.band(funct3, b.add_constant_64(3));
+		let f3_invalid = b.bor(b.icmp_eq(f3_low2, b.add_constant_64(3)), b.icmp_eq(funct3, b.add_constant_64(6)));
+		let f3_valid = b.bnot(f3_invalid);
+		let c_is_load = b.band(eq_opcode(OP_LOAD), f3_valid); // M8-B T2：lb/lbu/lh/lhu/lw 全家
+		let c_is_store = b.band(eq_opcode(OP_STORE), f3_valid); // M9 T2：sb/sh/sw 全家
+		let is_byte_load = b.band(c_is_load, b.bnot(b.icmp_eq(funct3, b.add_constant_64(0x2))));
 		// M9 T2：sb/sh（字节地址语义）——同周期「读旧字 + 写新字」双事件
-		let is_byte_store = b.band(eq_opcode(OP_STORE), b.bnot(b.icmp_eq(funct3, b.add_constant_64(0x2))));
+		let is_byte_store = b.band(c_is_store, b.bnot(b.icmp_eq(funct3, b.add_constant_64(0x2))));
 		let is_m_ext = b.band(is_risc, b.icmp_eq(funct7, one)); // RV32M：funct7=0x01
 
 		// read register values/versions
@@ -318,6 +323,11 @@ pub fn build_circuit(trace: &Trace) -> (Circuit, InoutRefs) {
 		let off_is_1 = b.select(b.icmp_eq(b.band(ld_byte_addr, one), one), one, zero);
 		let lh_misaligned = b.band(b.band(is_byte01, is_half01), off_is_1);
 		b.assert_eq(format!("lh_align[{t}]"), lh_misaligned, zero);
+		// M12-T3（M2）：sh 半字对齐断言（与 lh 对称；修复前 isa.rs 虚标已做）
+		let is_half_store01 = bool01(&b, b.icmp_eq(funct3, b.add_constant_64(F3_SH)));
+		let st_off_is_1 = b.select(b.icmp_eq(b.band(st_byte_addr, one), one), one, zero);
+		let sh_misaligned = b.band(b.band(bool01(&b, is_byte_store), is_half_store01), st_off_is_1);
+		b.assert_eq(format!("sh_align[{t}]"), sh_misaligned, zero);
 		// lw 之外的 load 写回 = 提取值；lw 保持整字
 		let load_wb = b.select(is_byte_load, load_extracted, ld_val[t]);
 		let alu_sum = b.select(is_imm, alu_core,
@@ -407,6 +417,8 @@ pub fn build_circuit(trace: &Trace) -> (Circuit, InoutRefs) {
 		b.assert_eq(format!("wr_iswrite[{t}]"), wr_iswrite[t], is_alu_write_01);
 		b.assert_eq(format!("ld_addr[{t}]"), ld_addr[t], eff_ld_addr);
 		b.assert_eq(format!("ld_ver[{t}]"), ld_ver[t], read_ram_ver);
+		// M12-T3（M3）：ld_val 的 32 位范围（RAM 词 = u32；高 32 位必须为零）
+		b.assert_eq(format!("ld_val_range[{t}]"), b.band(ld_val[t], b.add_constant_64(0xffffffff00000000)), zero);
 		b.assert_eq(format!("is_load[{t}]"), is_load[t], is_load_01);
 		b.assert_eq(format!("st_addr[{t}]"), st_addr[t], st_addr_w);
 		b.assert_eq(format!("st_ver[{t}]"), st_ver[t], store_new_ver);

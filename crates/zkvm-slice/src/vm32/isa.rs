@@ -95,7 +95,9 @@ pub fn remu(rd: u64, rs1: u64, rs2: u64) -> u64 { enc_r(0x01, rs2, rs1, 0x7, rd,
 
 // ---- M8-B T2：字节/半字访存（LOAD/STORE 扩展 funct3）----
 // 语义（设计详案 §2.7）：字粒度 RAM，地址低 2 位 = 字内字节偏移，字索引 = (addr>>2) mod NRAM；
-// lh/sh 半字对齐断言（addr[0]==0）；lw/sw 字对齐断言（addr[1:0]==0）。
+// lh/lhu/sh 半字对齐断言（addr[0]==0；M12-T3 M2 补齐 sh——修复前本注释虚标「已做」）：
+// 违者 interp panic、电路断言拒绝。lw/sw 无对齐语义（本引擎地址即字索引，imm 步长 1）。
+// M12-T3（M1）：非标 LOAD/STORE funct3 ∈ {3,6,7} 两层统一为 NOP。
 pub const F3_LB: u64 = 0x0;
 pub const F3_LH: u64 = 0x1;
 pub const F3_LW: u64 = 0x2;

@@ -106,4 +106,4 @@ pub use word_vm::run_word_vm;
 pub use word_vm_ram::run_word_vm_ram;
 pub use word_vm32::run_word_vm32;
 pub use ram_sort::run_ram_sort;
-pub use vm_ram_sort::{vmrs_prove, vmrs_verify, VmRsProof, VmRsVerifyOut};
+pub use vm_ram_sort::{vmrs_prove, vmrs_prove_with_init, vmrs_verify, vmrs_verify_online, vmrs_verifier_setup, VmRsProof, VmRsVerifierKey, VmRsVerifyOut};
