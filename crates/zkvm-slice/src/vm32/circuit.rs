@@ -103,6 +103,8 @@ pub struct InoutRefs {
 	pub init_regs: Vec<Wire>,
 	pub final_regs: Vec<Wire>,
 	pub fin_ver: Vec<Wire>,
+	/// M8-B T2：div/divu 的 advice 商（公开 inout，电路断言 q·b+r==a ∧ r<b）。
+	pub m_q: Vec<Wire>,
 }
 
 // flat inout layout (block): 20 fields/cycle, then init_regs[32], final_regs[32], fin_ver[64].
@@ -155,6 +157,8 @@ pub fn build_circuit(trace: &Trace) -> (Circuit, InoutRefs) {
 	let init_regs = (0..NREG).map(|_| b.add_inout()).collect::<Vec<_>>();
 	let final_regs = (0..NREG).map(|_| b.add_inout()).collect::<Vec<_>>();
 	let fin_ver = (0..NRAM).map(|_| b.add_inout()).collect::<Vec<_>>();
+	// M8-B T2：div 商 advice（每周期 1 词；rem = a - q·b 从商导出，无需独立 advice）
+	let m_q = (0..t_len).map(|_| b.add_inout()).collect::<Vec<_>>();
 
 	// registers (value + version chains), 32 each, per cycle
 	let mut reg: Vec<[Wire; NREG]> = Vec::new();
@@ -199,8 +203,10 @@ pub fn build_circuit(trace: &Trace) -> (Circuit, InoutRefs) {
 		let is_jal = eq_opcode(OP_JAL);
 		let is_jalr = eq_opcode(OP_JALR);
 		let is_branch = eq_opcode(OP_BRANCH);
-		let c_is_load = b.band(eq_opcode(OP_LOAD), b.icmp_eq(funct3, b.add_constant_64(0x2)));
-		let c_is_store = b.band(eq_opcode(OP_STORE), b.icmp_eq(funct3, b.add_constant_64(0x2)));
+		let c_is_load = eq_opcode(OP_LOAD); // M8-B T2：lb/lbu/lh/lhu/lw 全家
+		let c_is_store = b.band(eq_opcode(OP_STORE), b.icmp_eq(funct3, b.add_constant_64(0x2))); // sb/sh 见报告边界
+		let is_byte_load = b.band(eq_opcode(OP_LOAD), b.bnot(b.icmp_eq(funct3, b.add_constant_64(0x2))));
+		let is_m_ext = b.band(is_risc, b.icmp_eq(funct7, one)); // RV32M：funct7=0x01
 
 		// read register values/versions
 		let rs1v = mux(&b, &cur_reg, rs1);
@@ -210,7 +216,10 @@ pub fn build_circuit(trace: &Trace) -> (Circuit, InoutRefs) {
 
 		// memory address = rs1 + sext(imm): I-imm for lw, S-imm (sign-extended, imm_s) for sw.
 		// (S-type offset lives at inst[31:25]+inst[11:7], NOT imm_i whose low 5 bits alias rs2.)
-		let ld_addr_w = b.band(b.iadd_32(rs1v, imm_i), b.add_constant_64(0x3f));
+		let ld_byte_addr = b.iadd_32(rs1v, imm_i);
+		let ld_word_idx = b.band(b.srl32(ld_byte_addr, 2), b.add_constant_64(0x3f));
+		// M8-B T2：lw 沿用「地址即字索引」；字节/半字 load 用 (addr>>2)&0x3f
+		let ld_addr_w = b.select(is_byte_load, ld_word_idx, b.band(b.iadd_32(rs1v, imm_i), b.add_constant_64(0x3f)));
 		let st_addr_w = b.band(b.select(c_is_store, b.iadd_32(rs1v, imm_s), b.iadd_32(rs1v, imm_i)), b.add_constant_64(0x3f)); // S-imm on store, I-imm otherwise (matches witness fallback)
 		let read_ram_ver = mux(&b, &c_ram_ver, ld_addr_w);
 		let st_ram_ver = mux(&b, &c_ram_ver, st_addr_w);
@@ -239,13 +248,66 @@ pub fn build_circuit(trace: &Trace) -> (Circuit, InoutRefs) {
 		let lui_v = imm_u_val;
 		let auipc_v = b.iadd_32(pc_v, imm_u_val);
 		let jal_rd = b.iadd_32(pc_v, b.add_constant_64(4));
+		// ---- M8-B T2：RV32M 展开验证（设计详案 §2.6：advice 商 + 断言序列）----
+		// m_q 公开 advice（商）；余数 = x − q·y 电路导出。除零由 select 修正（div→-1、rem→x）；
+		// MIN÷−1 溢出在模 2^32 下自动正确（abs_x=MIN、商符号取负回到 MIN）。
+		let q = m_q[t];
+		let x32 = rs1v;
+		let y32 = rs2v;
+		let qy32 = b.band(b.imul(q, y32).1, b.add_constant_64(0xffffffff));
+		let r_u = b.band(b.isub_bin_bout(x32, qy32, zero).0, b.add_constant_64(0xffffffff));
+		let y_is0 = b.icmp_eq(y32, zero);
+		let q_is_max = b.icmp_eq(q, b.add_constant_64(0xffffffff));
+		let uns_ok = b.select(y_is0, b.band(q_is_max, b.icmp_eq(r_u, x32)), b.band(b.icmp_eq(qy32, x32), b.icmp_ult(r_u, y32)));
+		let sign_x = b.shl(b.band(b.srl32(x32, 31), one), 63); // 0/1 → MSB-bool（select 条件约定）
+		let sign_y = b.shl(b.band(b.srl32(y32, 31), one), 63);
+		let neg32 = |v: Wire| b.band(b.iadd_32(b.bnot(v), one), b.add_constant_64(0xffffffff));
+		let abs_x = b.select(sign_x, neg32(x32), x32);
+		let abs_y = b.select(sign_y, neg32(y32), y32);
+		let prod_s = b.band(b.imul(q, abs_y).1, b.add_constant_64(0xffffffff));
+		let r_s = b.band(b.isub_bin_bout(abs_x, prod_s, zero).0, b.add_constant_64(0xffffffff));
+		let abs_y0 = b.icmp_eq(abs_y, zero);
+		let s_ok = b.select(abs_y0, b.band(q_is_max, b.icmp_eq(r_s, abs_x)), b.band(b.icmp_eq(prod_s, abs_x), b.icmp_ult(r_s, abs_y)));
+		let is_signed_m = b.icmp_eq(b.band(funct3, one), zero); // div(4)/rem(6) 偶，divu/remu 奇
+		let s_bad = b.select(b.icmp_eq(s_ok, zero), one, zero); // 0/1 归一（MSB-bool 不可直接 assert_eq 0）
+		let uns_bad = b.select(b.icmp_eq(uns_ok, zero), one, zero);
+		let m_bad = b.select(is_signed_m, s_bad, uns_bad);
+		let is_div_family01 = bool01(&b, b.band(is_m_ext, b.icmp_ult(b.add_constant_64(3), funct3))); // funct3 ∈ 4..7
+		b.assert_eq(format!("m_assert[{t}]"), b.band(is_div_family01, m_bad), zero);
+		let neg_div = b.bxor(sign_x, sign_y);
+		let div_v = b.select(y_is0, b.add_constant_64(0xffffffff), b.select(neg_div, neg32(q), q));
+		let rem_v = b.select(y_is0, x32, b.select(sign_x, neg32(r_s), r_s));
+		let mul_lo = b.band(b.imul(x32, y32).1, b.add_constant_64(0xffffffff));
+		let m_res = mux8(&b, &[mul_lo, zero, zero, zero, div_v, q, rem_v, r_u], funct3);
+		// ---- M8-B T2：字节/半字 load 提取（RAM 字粒度：事件列记录整字 raw，提取在写回级）----
+		let ld_off = b.band(ld_byte_addr, b.add_constant_64(3));
+		let byte_shift = b.sll32(ld_off, 3);
+		let byte_raw = b.band(shr_var(&b, ld_val[t], byte_shift), b.add_constant_64(0xff));
+		let byte_sext = sext_w(&b, byte_raw, 8);
+		let half_shift = b.sll32(b.band(b.srl32(ld_off, 1), one), 4);
+		let half_raw = b.band(shr_var(&b, ld_val[t], half_shift), b.add_constant_64(0xffff));
+		let half_sext = sext_w(&b, half_raw, 16);
+		let is_half_load = b.icmp_eq(b.band(funct3, one), one); // lh(1)/lhu(5)
+		let is_signed_load = b.icmp_eq(b.srl32(funct3, 2), zero); // lb/lh bit2=0；lbu/lhu bit2=1
+		let load_ext = b.select(is_half_load, half_raw, byte_raw);
+		let load_ext_sext = b.select(is_half_load, half_sext, byte_sext);
+		let load_extracted = b.select(is_signed_load, load_ext_sext, load_ext);
+		// lh/lhu 半字对齐断言（addr[0]==0）
+		let is_byte01 = bool01(&b, is_byte_load);
+		let is_half01 = bool01(&b, is_half_load);
+		let off_is_1 = b.select(b.icmp_eq(b.band(ld_byte_addr, one), one), one, zero);
+		let lh_misaligned = b.band(b.band(is_byte01, is_half01), off_is_1);
+		b.assert_eq(format!("lh_align[{t}]"), lh_misaligned, zero);
+		// lw 之外的 load 写回 = 提取值；lw 保持整字
+		let load_wb = b.select(is_byte_load, load_extracted, ld_val[t]);
 		let alu_sum = b.select(is_imm, alu_core,
+			b.select(b.band(is_risc, is_m_ext), m_res,
 			b.select(is_risc, alu_core,
-			b.select(c_is_load, ld_val[t],
+			b.select(c_is_load, load_wb,
 			b.select(is_lui, lui_v,
 			b.select(is_auipc, auipc_v,
 			b.select(is_jal, jal_rd,
-			b.select(is_jalr, jal_rd, zero)))))));
+			b.select(is_jalr, jal_rd, zero))))))));
 
 		// x0 hard-zero write-back
 		let rd_is_zero = b.icmp_eq(rd, zero);
@@ -324,6 +386,6 @@ pub fn build_circuit(trace: &Trace) -> (Circuit, InoutRefs) {
 	for a in 0..NRAM {
 		b.assert_eq(format!("fin_ver[{a}]"), fin_ver[a], c_ram_ver[a]);
 	}
-	let iref = InoutRefs { inst, pc, rd1_reg, rd1_ver, rd1_val, rd2_reg, rd2_ver, rd2_val, wr_reg, wr_ver, wr_val, wr_iswrite, ld_addr, ld_ver, ld_val, is_load, st_addr, st_ver, st_val, is_store, init_regs, final_regs, fin_ver };
+	let iref = InoutRefs { inst, pc, rd1_reg, rd1_ver, rd1_val, rd2_reg, rd2_ver, rd2_val, wr_reg, wr_ver, wr_val, wr_iswrite, ld_addr, ld_ver, ld_val, is_load, st_addr, st_ver, st_val, is_store, init_regs, final_regs, fin_ver, m_q };
 	(b.build(), iref)
 }

@@ -106,4 +106,4 @@ M4 的版本链把 64 个计数器放进电路（O(K·T) gates），K=2^20 时�
 - `designs/milestone-roadmap.md`（M1-M6）保持不变，标记为 Phase 1（切片验证）。
 - M7-M10 的任务书在各自启动时生成（同 M2-M6 模式：Leader 写任务书 → Worker 实现 →
   Leader 验收）。
-- 当前状态（2026-09-08）：M1-M7 + M8-A ✅（M8-A 待验收，`M8_REPORT.md` 已产出）；下一步 M8-B 任务书（M8-A 验收后发）。
+- 当前状态（2026-09-08）：M1-M7 + M8-A ✅；M8-B ◐（T0-T2 ✅ 待验收 `M8B_REPORT.md`；T3 工具链停项待外部依赖）。

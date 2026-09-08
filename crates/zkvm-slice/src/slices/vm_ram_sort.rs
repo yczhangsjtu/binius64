@@ -28,6 +28,9 @@ use binius_frontend::{Circuit, CircuitBuilder, CircuitStat, Wire};
 use binius_hash::StdHashSuite;
 use binius_iop::basefold::channel::BaseFoldVerifierChannel;
 use binius_iop::basefold::compiler::BaseFoldVerifierCompiler;
+use binius_hash::hash_serialize;
+use binius_ip::channel::IPVerifierChannel;
+use binius_ip::logup_star::LookerClaim;
 use binius_iop::channel::{IOPVerifierChannel, OracleSpec};
 use binius_iop::fri::{ConstantArityStrategy, calculate_n_test_queries};
 use binius_iop::merkle_channel::VerifierMerkleTranscriptChannel;
@@ -35,10 +38,10 @@ use binius_iop::merkle_tree::BinaryMerkleTreeScheme;
 use binius_iop_prover::basefold::compiler::BaseFoldProverCompiler;
 use binius_iop_prover::channel::IOPProverChannel;
 use binius_iop_prover::merkle_channel::ProverMerkleTranscriptChannel;
-use binius_ip::channel::IPVerifierChannel;
+use binius_ip_prover::channel::IPProverChannel;
+use binius_ip_prover::logup_star::{Looker as LogupLooker, TableLookup as ProverTableLookup};
 use binius_ip::fracaddcheck;
 use binius_ip::fracaddcheck::FracAddEvalClaim;
-use binius_ip_prover::channel::IPProverChannel;
 use binius_ip_prover::fracaddcheck::fraction::Fraction;
 use binius_ip_prover::fracaddcheck::FracAddCircuit;
 use binius_math::multilinear::eq::{eq_ind, eq_ind_partial_eval_in};
@@ -206,6 +209,32 @@ fn prog_image(slot: usize, n: usize) -> u64 {
 	}
 }
 
+// ---- fetch 表（M8-B T0）：程序镜像作为 committed 表 + 公开镜像哈希 ----
+/// 程序表行数的 log2（段 1 每字 5 条 + 段 2 固定 22 条，向上取 2 的幂）。
+pub fn m_prog(n: usize) -> usize {
+	let slots = 5 * n + 22;
+	(usize::BITS - (slots - 1).leading_zeros()) as usize
+}
+
+/// committed fetch 表列：T[slot] = prog_image(slot, n)，pad 槽 = ecall。
+pub fn prog_col(n: usize) -> Vec<u64> {
+	(0..1usize << m_prog(n)).map(|slot| prog_image(slot, n)).collect()
+}
+
+/// 公开程序镜像哈希：StdDigest(Sha256) over 序列化的镜像 LF 列 → 4 个 u64（LE）。
+/// 这是"执行的程序"的公共输入对照值（声明性哈希；承诺绑定见 run_vmrs 的 oracle relation）。
+pub fn prog_image_hash(n: usize) -> [u64; 4] {
+	let elems: Vec<LF> = prog_col(n).iter().map(|&x| LF::from(x as u128)).collect();
+	let digest = hash_serialize::<LF, binius_hash::StdDigest>(&elems).expect("hash prog image");
+	let mut h = [0u64; 4];
+	for (i, w) in h.iter_mut().enumerate() {
+		let mut b = [0u8; 8];
+		b.copy_from_slice(&digest.as_slice()[i * 8..(i + 1) * 8]);
+		*w = u64::from_le_bytes(b);
+	}
+	h
+}
+
 // ---- trace（K=2^16 RAM 域，语义 = vm32::interp::run_program，仅地址域放大） ----
 pub struct BigTrace {
 	pub cycles: Vec<Cycle>,
@@ -359,6 +388,7 @@ pub fn run_program_big(
 			store,
 			ramver: [0usize; NRAM],
 			mem_addr: addr_calc as usize,
+			m_q: 0,
 		});
 		pc = next_pc;
 		if halted { break; }
@@ -425,6 +455,33 @@ pub fn event_rows(trace: &BigTrace) -> (Vec<Visit>, Vec<Visit>) {
 	(rows, side)
 }
 
+/// 恒等式②的 verifier 本地版（M8-B T1）：排序流已公开（inout），良构断言透明可验证。
+/// 语义与电路内 assert_sortedness 相同：init 形状/非降/ts 严增/同地址读一致/组切换 init。
+pub fn sortedness_ok(sorted: &[Visit]) -> bool {
+	if sorted.is_empty() || sorted[0].kind != K_INIT {
+		return false;
+	}
+	if sorted.iter().any(|e| e.kind == K_INIT && e.val != 0) {
+		return false;
+	}
+	for j in 0..sorted.len() - 1 {
+		let (a, b) = (&sorted[j], &sorted[j + 1]);
+		if b.addr < a.addr {
+			return false; // addr 非降
+		}
+		if a.addr == b.addr && a.ts >= b.ts {
+			return false; // 同地址 ts 严增
+		}
+		if a.addr == b.addr && (b.kind == K_READ || b.kind == K_FINAL) && a.val != b.val {
+			return false; // 同地址读一致
+		}
+		if a.addr != b.addr && b.kind != K_INIT {
+			return false; // 组切换必须是 init
+		}
+	}
+	true
+}
+
 // ---- 电路：执行（inout→witness）+ 事件 pinning + 排序流恒等式② + 三件套 ----
 pub struct VmRsIref {
 	pub inst: Vec<Wire>, pub pc: Vec<Wire>,
@@ -435,7 +492,25 @@ pub struct VmRsIref {
 	pub st_addr: Vec<Wire>, pub st_val: Vec<Wire>, pub is_store: Vec<Wire>,
 	pub s_addr: Vec<Wire>, pub s_ts: Vec<Wire>, pub s_val: Vec<Wire>, pub s_kind: Vec<Wire>,
 	pub final_out: Wire,
+	/// 公开程序镜像哈希（4 词，M8-B T0）：声明性公共输入，verifier 对照 expected。
+	pub prog_hash: [Wire; 4],
+	/// 事件侧重排列（M8-B T1 leaf-claim 桥：公开，开口重算对照用）。
+	pub d_addr: Vec<Wire>, pub d_ts: Vec<Wire>, pub d_val: Vec<Wire>, pub d_kind: Vec<Wire>,
 }
+
+/// inout 布局：[prog_hash×4, final_out, inst×T, pc×T, s_addr×ts, s_ts×ts, s_val×ts, s_kind×ts]。
+pub const IO_HASH: usize = 0;
+pub const IO_FINAL_OUT: usize = 4;
+pub const IO_INST: usize = 5;
+pub const fn io_pc(t_len: usize) -> usize { IO_INST + t_len }
+pub const fn io_s_addr(t_len: usize, ts: usize) -> usize { IO_INST + 2 * t_len }
+pub const fn io_s_ts(t_len: usize, ts: usize) -> usize { io_s_addr(t_len, ts) + ts }
+pub const fn io_s_val(t_len: usize, ts: usize) -> usize { io_s_ts(t_len, ts) + ts }
+pub const fn io_s_kind(t_len: usize, ts: usize) -> usize { io_s_val(t_len, ts) + ts }
+pub const fn io_d_addr(t_len: usize, ts: usize) -> usize { io_s_kind(t_len, ts) + ts }
+pub const fn io_d_ts(t_len: usize, ts: usize) -> usize { io_d_addr(t_len, ts) + ts }
+pub const fn io_d_val(t_len: usize, ts: usize) -> usize { io_d_ts(t_len, ts) + ts }
+pub const fn io_d_kind(t_len: usize, ts: usize) -> usize { io_d_val(t_len, ts) + ts }
 
 fn assert_sortedness(b: &CircuitBuilder, sa: &[Wire], sts: &[Wire], sv: &[Wire], sk: &[Wire]) {
 	let z = b.add_constant_64(0);
@@ -466,8 +541,22 @@ pub fn build_circuit_vmrs(t_len: usize, ts: usize) -> (Circuit, VmRsIref) {
 	let b = CircuitBuilder::new();
 	let zero = b.add_constant_64(0);
 	let one = b.add_constant_64(1);
-	let inst = (0..t_len).map(|_| b.add_witness()).collect::<Vec<_>>();
-	let pc = (0..t_len).map(|_| b.add_witness()).collect::<Vec<_>>();
+	// inout 声明顺序 = inout() 布局：[prog_hash×4, final_out, inst×T, pc×T]（见 IO_* 常量）。
+	let prog_hash = [b.add_inout(), b.add_inout(), b.add_inout(), b.add_inout()];
+	let final_out = b.add_inout();
+	// M8-B T0：inst/pc 提升为公开 inout（取指 claim 来源，M5 claims_from_inout 纪律）。
+	let inst = (0..t_len).map(|_| b.add_inout()).collect::<Vec<_>>();
+	let pc = (0..t_len).map(|_| b.add_inout()).collect::<Vec<_>>();
+	// M8-B T1 leaf-claim 桥：排序流全列（sorted ‖ side）8 列提升为公开 inout（Spartan 承诺），
+	// 验证端从 inout 重算挑战点求值对照 oracle 开口 → witness↔oracle 逐元素绑定。
+	let s_addr = (0..ts).map(|_| b.add_inout()).collect::<Vec<_>>();
+	let s_ts = (0..ts).map(|_| b.add_inout()).collect::<Vec<_>>();
+	let s_val = (0..ts).map(|_| b.add_inout()).collect::<Vec<_>>();
+	let s_kind = (0..ts).map(|_| b.add_inout()).collect::<Vec<_>>();
+	let d_addr = (0..ts).map(|_| b.add_inout()).collect::<Vec<_>>();
+	let d_ts = (0..ts).map(|_| b.add_inout()).collect::<Vec<_>>();
+	let d_val = (0..ts).map(|_| b.add_inout()).collect::<Vec<_>>();
+	let d_kind = (0..ts).map(|_| b.add_inout()).collect::<Vec<_>>();
 	let rd1_reg = (0..t_len).map(|_| b.add_witness()).collect::<Vec<_>>();
 	let rd1_val = (0..t_len).map(|_| b.add_witness()).collect::<Vec<_>>();
 	let rd2_reg = (0..t_len).map(|_| b.add_witness()).collect::<Vec<_>>();
@@ -481,11 +570,6 @@ pub fn build_circuit_vmrs(t_len: usize, ts: usize) -> (Circuit, VmRsIref) {
 	let st_addr = (0..t_len).map(|_| b.add_witness()).collect::<Vec<_>>();
 	let st_val = (0..t_len).map(|_| b.add_witness()).collect::<Vec<_>>();
 	let is_store = (0..t_len).map(|_| b.add_witness()).collect::<Vec<_>>();
-	let s_addr = (0..ts).map(|_| b.add_witness()).collect::<Vec<_>>();
-	let s_ts = (0..ts).map(|_| b.add_witness()).collect::<Vec<_>>();
-	let s_val = (0..ts).map(|_| b.add_witness()).collect::<Vec<_>>();
-	let s_kind = (0..ts).map(|_| b.add_witness()).collect::<Vec<_>>();
-	let final_out = b.add_inout();
 
 	// 寄存器值链（内部 wire）
 	let mut cur_reg = [zero; 32];
@@ -604,7 +688,7 @@ pub fn build_circuit_vmrs(t_len: usize, ts: usize) -> (Circuit, VmRsIref) {
 	b.assert_eq("final_out", final_out, acc);
 	(
 		b.build(),
-		VmRsIref { inst, pc, rd1_reg, rd1_val, rd2_reg, rd2_val, wr_reg, wr_val, wr_iswrite, ld_addr, ld_val, is_load, st_addr, st_val, is_store, s_addr, s_ts, s_val, s_kind, final_out },
+		VmRsIref { inst, pc, rd1_reg, rd1_val, rd2_reg, rd2_val, wr_reg, wr_val, wr_iswrite, ld_addr, ld_val, is_load, st_addr, st_val, is_store, s_addr, s_ts, s_val, s_kind, final_out, prog_hash, d_addr, d_ts, d_val, d_kind },
 	)
 }
 
@@ -612,6 +696,10 @@ pub fn build_circuit_vmrs(t_len: usize, ts: usize) -> (Circuit, VmRsIref) {
 pub struct VmRsRun {
 	pub c_ok: bool,
 	pub l_ok: bool,
+	/// 公开程序镜像哈希对照（M8-B T0）：inout 中的 prog_hash 词 == expected_prog_hash。
+	pub hash_ok: bool,
+	/// 恒等式②公开数据本地检查（M8-B T1）：排序流良构（非降/ts 严增/读一致/init 形状）。
+	pub s_ok: bool,
 	pub stat: CircuitStat,
 	pub t_len: usize,
 	pub ts: usize,
@@ -635,13 +723,27 @@ pub enum Tamper {
 	BadDenAddr,
 	/// 例 4（logup 层）：篡改 val 开口值 → `l_ok == false`。
 	BadDenVal,
+	/// 例 5（fetch 层，M8-B T0）：验证端篡改一个取指 claim → `l_ok == false`。
+	BadFetchClaim,
+	/// 例 6（程序公开性，M8-B T0）：prover 数据坏例——执行换过编码的程序（word_overrides）
+	/// 而承诺表/镜像哈希仍用原镜像 → 取指 claim ≠ 承诺表值 → `l_ok == false`。
+	SwapProgram,
+	/// 例 7（程序公开性，M8-B T0）：公开镜像哈希词与 expected 不符 → `hash_ok == false`。
+	BadProgHash,
+	/// 例 8（leaf-claim 桥，M8-B T1）：验证端篡改公开排序流事件侧列 d_val（电路不约束该列、
+	/// oracle 保持承诺值）→ 开口重算对照失配 → `l_ok == false`（c_ok/s_ok 不受影响，隔离桥的作用）。
+	BadBridgeWitness,
 }
 
-/// T1 主流程：native 排序程序 → trace → 电路（执行+恒等式②）→ BaseFold committed 列
-/// → fracaddcheck（恒等式①）→ 绑定 → verify。
-pub fn run_vmrs(n: usize, tamper: Tamper) -> VmRsRun {
+/// T1 主流程（M8-B T0 升级）：native 排序程序 → trace → 电路（执行+恒等式②+公开 inst/pc）
+/// → committed fetch 表 + logup* 取指 → BaseFold committed 列 → fracaddcheck（恒等式①）
+/// → 绑定 → verify。
+///
+/// `expected_hash`：验证端持有的公开程序哈希（None = 跳过对照）；`word_overrides`：
+/// 执行镜像的指令替换（SwapProgram 坏例用——承诺表仍用原镜像）。
+pub fn run_vmrs(n: usize, tamper: Tamper, expected_hash: Option<[u64; 4]>, word_overrides: &[(u64, u64)]) -> VmRsRun {
 	// fetch 闭包捕获 n：排序规模随参数变化（prog_fetch 固定用常量 N，仅作外部便捷入口）。
-	let trace = run_program_big(&vec![0u32; K], &[], |pc| prog_image((pc >> 2) as usize, n));
+	let trace = run_program_big(&vec![0u32; K], word_overrides, |pc| prog_image((pc >> 2) as usize, n));
 	assert!(trace.cycles.len() < 1_500_000);
 	let t_len = trace.cycles.len();
 	let (rows, side) = event_rows(&trace);
@@ -650,6 +752,11 @@ pub fn run_vmrs(n: usize, tamper: Tamper) -> VmRsRun {
 	let ts = sorted.len();
 	let l = (usize::BITS - ((2 * ts) - 1).leading_zeros()) as usize;
 	let nrows = 1usize << l;
+
+	// committed fetch 表（程序镜像）与公开镜像哈希
+	let mp = m_prog(n);
+	let prog_table = prog_col(n);
+	let img_hash = prog_image_hash(n);
 
 	// final 输出期望（排序后最小元素）
 	let final_val = trace.final_mem[OUT_ADDR as usize] as u64;
@@ -684,12 +791,30 @@ pub fn run_vmrs(n: usize, tamper: Tamper) -> VmRsRun {
 		w[iref.s_ts[j]] = Word(sorted[j].ts);
 		w[iref.s_val[j]] = Word(sorted[j].val);
 		w[iref.s_kind[j]] = Word(sorted[j].kind);
+		w[iref.d_addr[j]] = Word(side[j].addr);
+		w[iref.d_ts[j]] = Word(side[j].ts);
+		w[iref.d_val[j]] = Word(side[j].val);
+		w[iref.d_kind[j]] = Word(side[j].kind);
+	}
+	// 公开镜像哈希词（BadProgHash 坏例翻转一个词）
+	let mut hash_words = img_hash;
+	if tamper == Tamper::BadProgHash {
+		hash_words[0] ^= 1;
+	}
+	for i in 0..4 {
+		w[iref.prog_hash[i]] = Word(hash_words[i]);
 	}
 	w[iref.final_out] = Word(final_val);
 	circuit.populate_wire_witness(&mut w).expect("witness fill");
 	let witness_vec = w.into_value_vec();
 	cs.verify(&witness_vec).expect("native verify");
 	let inout_words = witness_vec.inout().to_vec();
+
+	// 公开哈希对照（M8-B T0，声明性公共输入）
+	let hash_ok = match expected_hash {
+		Some(exp) => hash_words == exp,
+		None => true,
+	};
 
 	// committed 列（事件侧 + 排序侧 ‖ pad）
 	let mut col_addr = vec![0u64; nrows];
@@ -705,6 +830,7 @@ pub fn run_vmrs(n: usize, tamper: Tamper) -> VmRsRun {
 		col_ts[ts + j] = side[j].ts; col_kind[ts + j] = side[j].kind;
 	}
 	let to_fb = |v: &[u64]| FieldBuffer::<LP, _>::from_values(&v.iter().map(|&x| LF::from(x as u128)).collect::<Vec<_>>());
+	let fb_prog = to_fb(&prog_table);
 	let fb_addr = to_fb(&col_addr);
 	let fb_val = to_fb(&col_val);
 	let fb_ts = to_fb(&col_ts);
@@ -716,15 +842,20 @@ pub fn run_vmrs(n: usize, tamper: Tamper) -> VmRsRun {
 	let mut pt = ProverTranscript::new(StdChallenger::default());
 	prover.prove(&witness_vec, &mut pt).expect("frontend prove");
 
-	// 说明：fetch 论证（M6 的 fetch logup 表）在本切片省略——程序语义由电路执行约束 +
-	// 内存论证 + 最终输出断言（inout）承担；fetch 表的程序固定性论证列入 M9/报告边界。
+	// M8-B T0：committed fetch 表 + indexed logup* 取指（M3/M5 模式，表改为 BaseFold 承诺）。
 	let merkle_scheme = BinaryMerkleTreeScheme::<LF, StdHashSuite>::new();
 	let log_inv_rate = 1;
 	let log_code_len = l + log_inv_rate;
 	let arity = ConstantArityStrategy::with_optimal_arity::<LF, _>(&merkle_scheme, log_code_len).arity;
 	let verifier_compiler = BaseFoldVerifierCompiler::new(
 		&merkle_scheme,
-		vec![OracleSpec { log_msg_len: l, is_zk: false }; 4],
+		vec![
+			OracleSpec { log_msg_len: mp, is_zk: false }, // fetch 表
+			OracleSpec { log_msg_len: l, is_zk: false },  // addr
+			OracleSpec { log_msg_len: l, is_zk: false },  // val
+			OracleSpec { log_msg_len: l, is_zk: false },  // ts
+			OracleSpec { log_msg_len: l, is_zk: false },  // kind
+		],
 		log_inv_rate,
 		calculate_n_test_queries(100, log_inv_rate),
 		&ConstantArityStrategy::new(arity),
@@ -732,10 +863,27 @@ pub fn run_vmrs(n: usize, tamper: Tamper) -> VmRsRun {
 	let prover_compiler = BaseFoldProverCompiler::from_verifier_compiler(&verifier_compiler, NeighborsLastMultiThread::new(GaoMateerPreExpanded::<LF>::generate(log_code_len), 1));
 	let merkle_chan = ProverMerkleTranscriptChannel::<&mut ProverTranscript<StdChallenger>, StdChallenger, LF, StdHashSuite>::new(&mut pt);
 	let mut chan = prover_compiler.create_channel(merkle_chan, StdRng::from_seed([0u8; 32]), GlobalAllocator);
+	// 承诺先于一切取指挑战（logup 的前置条件）；fetch 表第一个承诺。
+	let o_prog = chan.send_oracle(fb_prog.as_view());
 	let o_addr = chan.send_oracle(fb_addr.as_view());
 	let o_val = chan.send_oracle(fb_val.as_view());
 	let o_ts = chan.send_oracle(fb_ts.as_view());
 	let o_kind = chan.send_oracle(fb_kind.as_view());
+	// indexed logup*：每周期一个单行 looker (index=pc/4, claim=inst)，claims 来自公开 inout。
+	let gamma: LF = chan.sample();
+	let look_idx: Vec<[usize; 1]> = trace.cycles.iter().map(|c| [(c.pc >> 2) as usize]).collect();
+	let look_claims: Vec<LF> = inout_words[IO_INST..IO_INST + t_len].iter().map(|w| LF::from(w.0 as u128)).collect();
+	let lookers: Vec<LogupLooker<LF>> = look_idx
+		.iter()
+		.zip(&look_claims)
+		.map(|(ix, &cl)| LogupLooker { index: &ix[..], eval_point: &[] as &[LF], eval_claim: cl })
+		.collect();
+	let logup_out = binius_ip_prover::logup_star::prove::<GlobalAllocator, LF, LP>(
+		&alloc,
+		gamma,
+		vec![ProverTableLookup { table: fb_prog.as_view(), lookers }],
+		&mut chan,
+	);
 	let rho: LF = chan.sample();
 	let c: LF = chan.sample();
 
@@ -764,14 +912,21 @@ pub fn run_vmrs(n: usize, tamper: Tamper) -> VmRsRun {
 		for (j, &x) in col.iter().enumerate() { s += eq_vals[j] * LF::from(x as u128); }
 		s
 	};
+	// prover 端 relation claim = committed 列在 r 的开口值
 	let addr_r = dot(&col_addr);
 	let val_r = dot(&col_val);
 	let ts_r = dot(&col_ts);
 	let kind_r = dot(&col_kind);
+	// fetch 表 claim 绑定到承诺（M8-B T0）：claim = prog MLE 在 logup 归约点 tep 的求值。
+	let tep = logup_out.table_eval_point.clone();
+	let prog_claim = logup_out.tables[0].eval_claim;
+	let eq_tep = eq_ind_partial_eval_in::<GlobalAllocator, LP>(&alloc, &tep);
+	chan.prove_oracle_relation(o_prog, eq_tep, prog_claim);
 	chan.prove_oracle_relation(o_addr, eq_r.clone(), addr_r);
 	chan.prove_oracle_relation(o_val, eq_r.clone(), val_r);
 	chan.prove_oracle_relation(o_ts, eq_r.clone(), ts_r);
 	chan.prove_oracle_relation(o_kind, eq_r.clone(), kind_r);
+	chan.finalize_oracle(o_prog, fb_prog);
 	chan.finalize_oracle(o_addr, fb_addr);
 	chan.finalize_oracle(o_val, fb_val);
 	chan.finalize_oracle(o_ts, fb_ts);
@@ -780,21 +935,84 @@ pub fn run_vmrs(n: usize, tamper: Tamper) -> VmRsRun {
 
 	// ---------- verifier ----------
 	let mut vt = pt.into_verifier();
-	let inout_verify: Vec<Word> = if tamper == Tamper::BadFinalOut {
+	let mut inout_verify: Vec<Word> = if tamper == Tamper::BadFinalOut {
 		let mut v = inout_words.clone();
-		v[0].0 ^= 1;
+		v[IO_FINAL_OUT].0 ^= 1;
 		v
 	} else {
 		inout_words.clone()
 	};
+	if tamper == Tamper::BadBridgeWitness {
+		inout_verify[io_d_val(t_len, ts)].0 ^= 1;
+	}
 	let c_ok = verifier.verify(&inout_verify, &mut vt).is_ok();
+	// 恒等式②透明检查（M8-B T1）：排序流已公开，良构断言在验证端直接检查。
+	let pub_sorted: Vec<Visit> = (0..ts)
+		.map(|j| Visit {
+			addr: inout_verify[io_s_addr(t_len, ts) + j].0,
+			ts: inout_verify[io_s_ts(t_len, ts) + j].0,
+			val: inout_verify[io_s_val(t_len, ts) + j].0,
+			kind: inout_verify[io_s_kind(t_len, ts) + j].0,
+		})
+		.collect();
+	let s_ok = sortedness_ok(&pub_sorted);
+	// leaf-claim 桥（M8-B T1）：验证端从 **公开 inout**（transcript 承诺）重算开口值，
+	// 对照 oracle relation claim → 公开列与 oracle 列在随机点 r 上逐元素绑定
+	// （两份列不一致 ⇒ 重算值 ≠ 承诺开口值 ⇒ den_check/relation 失配拒绝）。
+	let dot_pub = |sbase: usize, dbase: usize| -> LF {
+		let mut acc = LF::ZERO;
+		for (j, &ev) in eq_vals.iter().enumerate().take(2 * ts) {
+			let w = if j < ts { inout_verify[sbase + j].0 } else { inout_verify[dbase + (j - ts)].0 };
+			acc += ev * LF::from(w as u128);
+		}
+		acc
+	};
+	let addr_r_v = dot_pub(io_s_addr(t_len, ts), io_d_addr(t_len, ts));
+	let val_r_v = dot_pub(io_s_val(t_len, ts), io_d_val(t_len, ts));
+	let ts_r_v = dot_pub(io_s_ts(t_len, ts), io_d_ts(t_len, ts));
+	let kind_r_v = dot_pub(io_s_kind(t_len, ts), io_d_kind(t_len, ts));
 	let merkle_veri = VerifierMerkleTranscriptChannel::<&mut VerifierTranscript<StdChallenger>, StdChallenger, LF, StdHashSuite>::new(&mut vt);
-	let v_specs = vec![OracleSpec { log_msg_len: l, is_zk: false }; 4];
+	let v_specs = vec![
+		OracleSpec { log_msg_len: mp, is_zk: false },
+		OracleSpec { log_msg_len: l, is_zk: false },
+		OracleSpec { log_msg_len: l, is_zk: false },
+		OracleSpec { log_msg_len: l, is_zk: false },
+		OracleSpec { log_msg_len: l, is_zk: false },
+	];
 	let mut vchan = BaseFoldVerifierChannel::new(merkle_veri, &v_specs, verifier_compiler.fri_params());
+	let v_o_prog = vchan.recv_oracle(mp, false).unwrap();
 	let v_o_addr = vchan.recv_oracle(l, false).unwrap();
 	let v_o_val = vchan.recv_oracle(l, false).unwrap();
 	let v_o_ts = vchan.recv_oracle(l, false).unwrap();
 	let v_o_kind = vchan.recv_oracle(l, false).unwrap();
+	// 挑战/消息顺序与 prover 严格同序：γ → logup reduction → ρ → c → root_den → fracadd GKR。
+	let vgamma: LF = vchan.sample();
+	let mut v_look_claims: Vec<LF> = inout_verify[IO_INST..IO_INST + t_len]
+		.iter()
+		.map(|w| LF::from(w.0 as u128))
+		.collect();
+	if tamper == Tamper::BadFetchClaim {
+		v_look_claims[0] += LF::ONE;
+	}
+	let v_tables = vec![binius_ip::logup_star::TableLookup {
+		n_vars: mp,
+		lookers: v_look_claims
+			.iter()
+			.map(|cl| LookerClaim { eval_point: &[] as &[LF], eval_claim: *cl })
+			.collect(),
+	}];
+	// fetch：indexed logup* 归约 + 表 claim 对 committed 承诺的 oracle relation（排队到 finish）。
+	let fetch_ok = (|| -> bool {
+		let vout = match binius_ip::logup_star::verify_reduction::<LF, _>(&vgamma, v_tables.clone(), &mut vchan) {
+			Ok(o) => o,
+			Err(_) => return false,
+		};
+		let vtep = vout.table_eval_point.clone();
+		let vclaim = vout.tables[0].eval_claim;
+		vchan
+			.verify_oracle_relation(v_o_prog, Box::new(move |p: &[LF]| eq_ind(&vtep, p)), vclaim)
+			.is_ok()
+	})();
 	let vrho: LF = vchan.sample();
 	let vc: LF = vchan.sample();
 	let mut vroot_den: LF = vchan.recv_one().expect("recv root_den");
@@ -802,6 +1020,9 @@ pub fn run_vmrs(n: usize, tamper: Tamper) -> VmRsRun {
 		vroot_den += LF::ONE;
 	}
 	let l_ok = (|vchan: &mut BaseFoldVerifierChannel<'_, LF, _>| -> bool {
+		if !fetch_ok {
+			return false;
+		}
 		let vfinal = match fracaddcheck::verify::<LF, _>(l, FracAddEvalClaim { num_eval: LF::ZERO, den_eval: vroot_den, point: vec![] }, vchan) {
 			Ok(c) => c,
 			Err(_) => return false,
@@ -817,21 +1038,22 @@ pub fn run_vmrs(n: usize, tamper: Tamper) -> VmRsRun {
 			sum_eq += e;
 		}
 		if vfinal.num_eval != sum_eq { return false; }
-		let a_use = if tamper == Tamper::BadDenAddr { addr_r + LF::ONE } else { addr_r };
-		let v_use = if tamper == Tamper::BadDenVal { val_r + LF::ONE } else { val_r };
+		let a_use = if tamper == Tamper::BadDenAddr { addr_r_v + LF::ONE } else { addr_r_v };
+		let v_use = if tamper == Tamper::BadDenVal { val_r_v + LF::ONE } else { val_r_v };
 		let rr2 = vrho * vrho;
 		let rr3 = rr2 * vrho;
-		let den_check = vc * sum_eq + a_use + vrho * v_use + rr2 * ts_r + rr3 * kind_r + (LF::ONE - sum_eq);
+		let den_check = vc * sum_eq + a_use + vrho * v_use + rr2 * ts_r_v + rr3 * kind_r_v + (LF::ONE - sum_eq);
 		if vfinal.den_eval != den_check { return false; }
-		let ok_addr = vchan.verify_oracle_relation(v_o_addr, Box::new({ let rr = r.clone(); move |p: &[LF]| eq_ind(&rr, p) }), addr_r);
-		let ok_val = vchan.verify_oracle_relation(v_o_val, Box::new({ let rr = r.clone(); move |p: &[LF]| eq_ind(&rr, p) }), val_r);
-		let ok_ts = vchan.verify_oracle_relation(v_o_ts, Box::new({ let rr = r.clone(); move |p: &[LF]| eq_ind(&rr, p) }), ts_r);
-		let ok_kind = vchan.verify_oracle_relation(v_o_kind, Box::new({ let rr = r.clone(); move |p: &[LF]| eq_ind(&rr, p) }), kind_r);
+		// oracle relation claim 用公开重算值（leaf-claim 桥对照点）
+		let ok_addr = vchan.verify_oracle_relation(v_o_addr, Box::new({ let rr = r.clone(); move |p: &[LF]| eq_ind(&rr, p) }), addr_r_v);
+		let ok_val = vchan.verify_oracle_relation(v_o_val, Box::new({ let rr = r.clone(); move |p: &[LF]| eq_ind(&rr, p) }), val_r_v);
+		let ok_ts = vchan.verify_oracle_relation(v_o_ts, Box::new({ let rr = r.clone(); move |p: &[LF]| eq_ind(&rr, p) }), ts_r_v);
+		let ok_kind = vchan.verify_oracle_relation(v_o_kind, Box::new({ let rr = r.clone(); move |p: &[LF]| eq_ind(&rr, p) }), kind_r_v);
 		ok_addr.is_ok() && ok_val.is_ok() && ok_ts.is_ok() && ok_kind.is_ok()
 	})(&mut vchan) && match vchan.finish() { Ok(_) => true, Err(_) => false };
 
 	let sorted_ok = (0..n - 1).all(|i| trace.final_mem[BASE as usize + i] <= trace.final_mem[BASE as usize + i + 1]);
-	VmRsRun { c_ok, l_ok, stat, t_len, ts, l, inout_words, prover, verifier, witness: witness_vec, sorted_ok }
+	VmRsRun { c_ok, l_ok, hash_ok, s_ok, stat, t_len, ts, l, inout_words, prover, verifier, witness: witness_vec, sorted_ok }
 }
 
 #[cfg(test)]
@@ -842,21 +1064,34 @@ mod tests {
 	fn show(run: &VmRsRun, label: &str) {
 		let s = &run.stat;
 		println!(
-			"{label}: T={} ts={} l={} gates={} zero/and/bmul={}/{}/{} c_ok={} l_ok={} sorted_ok={}",
+			"{label}: T={} ts={} l={} gates={} zero/and/bmul={}/{}/{} c_ok={} l_ok={} hash_ok={} sorted_ok={}",
 			run.t_len, run.ts, run.l, s.n_gates, s.n_zero_constraints, s.n_and_constraints,
-			s.n_bmul_constraints, run.c_ok, run.l_ok, run.sorted_ok
+			s.n_bmul_constraints, run.c_ok, run.l_ok, run.hash_ok, run.sorted_ok
 		);
 	}
 
 	#[test]
 	fn vm_ram_sort_honest() {
 		let t0 = Instant::now();
-		let run = run_vmrs(16, Tamper::None);
+		let run = run_vmrs(16, Tamper::None, Some(prog_image_hash(16)), &[]);
 		let dt = t0.elapsed().as_secs_f32();
 		assert!(run.sorted_ok, "native 排序必须成功");
 		assert!(run.c_ok, "诚实路径电路必须通过");
 		assert!(run.l_ok, "诚实路径 fracaddcheck/绑定必须通过");
+		assert!(run.hash_ok, "公开镜像哈希必须对照通过");
+		assert!(run.s_ok, "公开排序流良构检查必须通过");
 		show(&run, &format!("honest ({dt:.1}s)"));
+	}
+
+	/// M8-B T1 例 8：篡改公开事件侧列（保留 oracle）→ 开口重算对照失配（leaf-claim 桥拒绝）。
+	#[test]
+	fn vm_ram_sort_soundness_bad_bridge_witness() {
+		let run = run_vmrs(16, Tamper::BadBridgeWitness, Some(prog_image_hash(16)), &[]);
+		// 公开列在 transcript 层即被 assert 消息绑定（比电路断言更根本）→ c_ok 拒；
+		// 同时开口重算对照失配 → l_ok 拒（leaf-claim 桥的双重拒绝）。
+		assert!(!run.c_ok, "公开列被 transcript assert 绑定 → 篡改即拒");
+		assert!(!run.l_ok, "开口重算对照必须失配拒绝（l_ok==false）");
+		show(&run, "sound 8/bad-bridge-witness (leaf-claim bridge)");
 	}
 
 	/// 缩放点（任务书 §2.5）：N=32，供报告成本曲线；默认忽略（`--ignored` 运行）。
@@ -864,22 +1099,51 @@ mod tests {
 	#[ignore]
 	fn vm_ram_sort_scale32() {
 		let t0 = Instant::now();
-		let run = run_vmrs(32, Tamper::None);
+		let run = run_vmrs(32, Tamper::None, Some(prog_image_hash(32)), &[]);
 		let dt = t0.elapsed().as_secs_f32();
 		show(&run, &format!("scale N=32 ({dt:.1}s)"));
-		assert!(run.sorted_ok && run.c_ok && run.l_ok);
+		assert!(run.sorted_ok && run.c_ok && run.l_ok && run.hash_ok);
+	}
+
+	/// M8-B T0 例 5：验证端篡改一个取指 claim → logup 归约拒。
+	#[test]
+	fn vm_ram_sort_soundness_bad_fetch_claim() {
+		let run = run_vmrs(16, Tamper::BadFetchClaim, Some(prog_image_hash(16)), &[]);
+		assert!(run.c_ok, "电路实例未动");
+		assert!(!run.l_ok, "篡改取指 claim 必须被 logup 归约拒绝（l_ok==false）");
+		show(&run, "sound 5/bad-fetch-claim (fetch layer)");
+	}
+
+	/// M8-B T0 例 6：执行换过编码的程序、承诺表/镜像哈希仍用原镜像 → 取指 claim ≠ 承诺表值。
+	/// 直接证明"执行的==取指的==承诺的程序"（prover 数据坏例 + verify 层拒绝）。
+	#[test]
+	fn vm_ram_sort_soundness_swap_program() {
+		// slot 0：lui x15, hi(13) 换成语义等价但编码不同的 addi x15, x0, 13。
+		let run = run_vmrs(16, Tamper::SwapProgram, Some(prog_image_hash(16)), &[(0x0, addi(15, 0, 13))]);
+		assert!(run.c_ok, "执行自洽（换编码程序仍然正确执行）");
+		assert!(run.hash_ok, "镜像哈希对照通过（表/哈希都是原镜像的）");
+		assert!(!run.l_ok, "执行的指令 ≠ 承诺表值必须被 fetch 归约拒绝（l_ok==false）");
+		show(&run, "sound 6/swap-program (program binding)");
+	}
+
+	/// M8-B T0 例 7：公开镜像哈希词与 expected 不符 → hash_ok == false（verify 层对照）。
+	#[test]
+	fn vm_ram_sort_soundness_bad_prog_hash() {
+		let run = run_vmrs(16, Tamper::BadProgHash, Some(prog_image_hash(16)), &[]);
+		assert!(!run.hash_ok, "镜像哈希不符必须被公共输入对照拒绝（hash_ok==false）");
+		show(&run, "sound 7/bad-prog-hash (program binding)");
 	}
 
 	#[test]
 	fn vm_ram_sort_soundness_bad_final_out() {
-		let run = run_vmrs(16, Tamper::BadFinalOut);
+		let run = run_vmrs(16, Tamper::BadFinalOut, Some(prog_image_hash(16)), &[]);
 		assert!(!run.c_ok, "验证端篡改最终输出必须被电路拒绝（c_ok==false）");
 		show(&run, "sound 1/bad-final-out (circuit layer)");
 	}
 
 	#[test]
 	fn vm_ram_sort_soundness_bad_root_den() {
-		let run = run_vmrs(16, Tamper::BadRootDen);
+		let run = run_vmrs(16, Tamper::BadRootDen, Some(prog_image_hash(16)), &[]);
 		assert!(run.c_ok, "电路实例未动");
 		assert!(!run.l_ok, "验证端篡改 root_den 必须被 fracaddcheck 拒绝（l_ok==false）");
 		show(&run, "sound 2/bad-root-den (logup layer)");
@@ -887,7 +1151,7 @@ mod tests {
 
 	#[test]
 	fn vm_ram_sort_soundness_bad_den_addr() {
-		let run = run_vmrs(16, Tamper::BadDenAddr);
+		let run = run_vmrs(16, Tamper::BadDenAddr, Some(prog_image_hash(16)), &[]);
 		assert!(run.c_ok, "电路实例未动");
 		assert!(!run.l_ok, "验证端篡改 addr 开口值必须拒绝（l_ok==false）");
 		show(&run, "sound 3/bad-den-addr (logup layer)");
@@ -895,7 +1159,7 @@ mod tests {
 
 	#[test]
 	fn vm_ram_sort_soundness_bad_den_val() {
-		let run = run_vmrs(16, Tamper::BadDenVal);
+		let run = run_vmrs(16, Tamper::BadDenVal, Some(prog_image_hash(16)), &[]);
 		assert!(run.c_ok, "电路实例未动");
 		assert!(!run.l_ok, "验证端篡改 val 开口值必须拒绝（l_ok==false）");
 		show(&run, "sound 4/bad-den-val (logup layer)");

@@ -57,6 +57,13 @@ pub fn bgeu(rs1: u64, rs2: u64, imm13: u64) -> u64 { enc_b(OP_BRANCH, 0x7, rs1, 
 // memory
 pub fn lhs_lw(rd: u64, rs1: u64, imm12: u64) -> u64 { enc_i(OP_LOAD, 0x2, rd, rs1, imm12) }
 pub fn sw(rs2: u64, rs1: u64, imm12: u64) -> u64 { enc_s(OP_STORE, 0x2, rs1, rs2, imm12) }
+// M8-B T2：字节/半字访存
+pub fn lb(rd: u64, rs1: u64, imm12: u64) -> u64 { enc_i(OP_LOAD, F3_LB, rd, rs1, imm12) }
+pub fn lh(rd: u64, rs1: u64, imm12: u64) -> u64 { enc_i(OP_LOAD, F3_LH, rd, rs1, imm12) }
+pub fn lbu(rd: u64, rs1: u64, imm12: u64) -> u64 { enc_i(OP_LOAD, F3_LBU, rd, rs1, imm12) }
+pub fn lhu(rd: u64, rs1: u64, imm12: u64) -> u64 { enc_i(OP_LOAD, F3_LHU, rd, rs1, imm12) }
+pub fn sb(rs2: u64, rs1: u64, imm12: u64) -> u64 { enc_s(OP_STORE, F3_SB, rs1, rs2, imm12) }
+pub fn sh(rs2: u64, rs1: u64, imm12: u64) -> u64 { enc_s(OP_STORE, F3_SH, rs1, rs2, imm12) }
 // I
 pub fn addi(rd: u64, rs1: u64, imm12: u64) -> u64 { enc_i(OP_OPIMM, 0x0, rd, rs1, imm12) }
 pub fn slti(rd: u64, rs1: u64, imm12: u64) -> u64 { enc_i(OP_OPIMM, 0x2, rd, rs1, imm12) }
@@ -78,6 +85,26 @@ pub fn srl(rd: u64, rs1: u64, rs2: u64) -> u64 { enc_r(0x00, rs2, rs1, 0x5, rd, 
 pub fn sra(rd: u64, rs1: u64, rs2: u64) -> u64 { enc_r(0x20, rs2, rs1, 0x5, rd, OP_OP) }
 pub fn or(rd: u64, rs1: u64, rs2: u64) -> u64 { enc_r(0x00, rs2, rs1, 0x6, rd, OP_OP) }
 pub fn and(rd: u64, rs1: u64, rs2: u64) -> u64 { enc_r(0x00, rs2, rs1, 0x7, rd, OP_OP) }
+
+// ---- M8-B T2：RV32M（mul/div/rem，funct7=0x01）----
+pub fn mul(rd: u64, rs1: u64, rs2: u64) -> u64 { enc_r(0x01, rs2, rs1, 0x0, rd, OP_OP) }
+pub fn div(rd: u64, rs1: u64, rs2: u64) -> u64 { enc_r(0x01, rs2, rs1, 0x4, rd, OP_OP) }
+pub fn divu(rd: u64, rs1: u64, rs2: u64) -> u64 { enc_r(0x01, rs2, rs1, 0x5, rd, OP_OP) }
+pub fn rem(rd: u64, rs1: u64, rs2: u64) -> u64 { enc_r(0x01, rs2, rs1, 0x6, rd, OP_OP) }
+pub fn remu(rd: u64, rs1: u64, rs2: u64) -> u64 { enc_r(0x01, rs2, rs1, 0x7, rd, OP_OP) }
+
+// ---- M8-B T2：字节/半字访存（LOAD/STORE 扩展 funct3）----
+// 语义（设计详案 §2.7）：字粒度 RAM，地址低 2 位 = 字内字节偏移，字索引 = (addr>>2) mod NRAM；
+// lh/sh 半字对齐断言（addr[0]==0）；lw/sw 字对齐断言（addr[1:0]==0）。
+pub const F3_LB: u64 = 0x0;
+pub const F3_LH: u64 = 0x1;
+pub const F3_LW: u64 = 0x2;
+pub const F3_LBU: u64 = 0x4;
+pub const F3_LHU: u64 = 0x5;
+pub const F3_SB: u64 = 0x0;
+pub const F3_SH: u64 = 0x1;
+pub const F3_SW: u64 = 0x2;
+
 #[inline]
 pub fn sext(v: u64, bits: u32) -> u64 {
 	// sign-extend the low `bits` of v to 64 bits

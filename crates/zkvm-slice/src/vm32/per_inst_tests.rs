@@ -156,3 +156,71 @@ fn per_inst_shift_shamt_boundaries() {
 		check("srai 1", 3, a, 0, srai(3, 1, 1), ((a as i32) >> 1) as u32);
 	}
 }
+// ---- M8-B T2：mul/div/divu/rem/remu + 字节/半字访存（native 语义对拍）----
+
+#[test]
+fn per_inst_m_extension() {
+	// 常规 + 边界：除零、MIN÷-1 溢出、rem 符号随被除数
+	check("mul 3*4", 3, 3, 4, mul(3, 1, 2), 12);
+	check("mul neg", 3, M1, 3, mul(3, 1, 2), M1.wrapping_mul(3));
+	check("mul wrap", 3, X80, 2, mul(3, 1, 2), X80.wrapping_mul(2));
+	check("divu 7/2", 3, 7, 2, divu(3, 1, 2), 3);
+	check("divu 1/0", 3, 1, 0, divu(3, 1, 2), u32::MAX);
+	check("divu 0/0", 3, 0, 0, divu(3, 1, 2), u32::MAX);
+	check("divu M1/2", 3, M1, 2, divu(3, 1, 2), M1 / 2);
+	check("remu 7/2", 3, 7, 2, remu(3, 1, 2), 1);
+	check("remu 1/0", 3, 1, 0, remu(3, 1, 2), 1);
+	check("div 7/-2", 3, 7, (0u32).wrapping_sub(2), div(3, 1, 2), 7i32.wrapping_div(-2i32) as u32);
+	check("div -7/2", 3, (0u32).wrapping_sub(7), 2, div(3, 1, 2), ((-7i32) / 2) as u32);
+	check("div 1/0", 3, 1, 0, div(3, 1, 2), u32::MAX);
+	check("div MIN/-1", 3, X80, M1, div(3, 1, 2), X80);
+	check("rem 7/-2", 3, 7, (0u32).wrapping_sub(2), rem(3, 1, 2), 1);
+	check("rem -7/2", 3, (0u32).wrapping_sub(7), 2, rem(3, 1, 2), ((-7i32) % 2) as u32);
+	check("rem MIN/-1", 3, X80, M1, rem(3, 1, 2), 0);
+	check("rem 1/0", 3, 1, 0, rem(3, 1, 2), 1);
+}
+
+/// 字节/半字访存：init 内存 → sb/sh 写 → lw 读回整字验证合并；lb/lh 提取 + 符号扩展。
+#[test]
+fn per_inst_byte_half_mem() {
+	// init: mem[4] = 0x00000000（字节地址 16..20 = 字索引 4）
+	let mut init = [0u32; NRAM];
+	init[4] = 0x0000_0000;
+	init[5] = 0xa5c3_1234;
+	// 程序：x1 = 字节地址 16（字 4），sb x2, x1, 0（写低字节 0xef）→ lw x3 读回
+	let mut prog: Vec<(u64, u64)> = Vec::new();
+	prog.push((0x00, lhs_lui(1, 0))); // x1 = 16
+	prog.push((0x04, addi(1, 1, 16)));
+	emit_val(0xef, 2, 0x08, &mut prog);
+	prog.push((0x10, sb(2, 1, 0)));
+	prog.push((0x14, lhs_lw(3, 0, 4))); // lw 字索引语义：读字 4
+	prog.push((0x18, jal(0, 0xc4 - 0x18)));
+	let r = run_program(&init, &prog, &[], |_| 0);
+	assert_eq!(r.final_regs[3], 0x0000_00ef, "sb 合并低字节后 lw 读回");
+
+	// sh：半字对齐 addr=18（字 4 偏移半字 1）写 0xbeef_0000 的高半字…… sh(2,1,0) at addr=18
+	let mut prog2: Vec<(u64, u64)> = Vec::new();
+	prog2.push((0x00, lhs_lui(1, 0)));
+	prog2.push((0x04, addi(1, 1, 18))); // 字节地址 18 = 字 4 的半字 1
+	emit_val(0xbeef, 2, 0x08, &mut prog2);
+	prog2.push((0x10, sh(2, 1, 0)));
+	prog2.push((0x14, lhs_lw(3, 0, 4))); // lw 字索引语义：读字 4
+	prog2.push((0x18, jal(0, 0xc4 - 0x18)));
+	let r2 = run_program(&init, &prog2, &[], |_| 0);
+	assert_eq!(r2.final_regs[3], 0xbeef_0000, "sh 合并高半字后 lw 读回");
+
+	// lb/lbu/lh/lhu 提取：mem[5]=0xa5c3_1234，字节地址 20 = 字 5 偏移 0
+	let mut prog3: Vec<(u64, u64)> = Vec::new();
+	prog3.push((0x00, lhs_lui(1, 0)));
+	prog3.push((0x04, addi(1, 1, 20)));
+	prog3.push((0x08, lb(3, 1, 3))); // 字节 3 = 0xa5（负，测符号扩展）
+	prog3.push((0x0c, lbu(4, 1, 0)));
+	prog3.push((0x10, lh(5, 1, 2))); // 半字 1 = 0xa5c3（负，测符号扩展）
+	prog3.push((0x14, lhu(6, 1, 2)));
+	prog3.push((0x18, jal(0, 0xc4 - 0x18)));
+	let r3 = run_program(&init, &prog3, &[], |_| 0);
+	assert_eq!(r3.final_regs[3], 0xffff_ffa5, "lb 符号扩展 0xa5(负)");
+	assert_eq!(r3.final_regs[4], 0x34, "lbu 零扩展");
+	assert_eq!(r3.final_regs[5], 0xffff_a5c3, "lh 符号扩展");
+	assert_eq!(r3.final_regs[6], 0xa5c3, "lhu 零扩展");
+}

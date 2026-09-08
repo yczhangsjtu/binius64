@@ -16,7 +16,8 @@ pub struct Cycle {
 	pub store: Option<MemAccess>,
 	pub ramver: [usize; NRAM],
 	pub mem_addr: usize,
-
+	/// M8-B T2：div/divu 的 advice 商（非除法周期填 0）。
+	pub m_q: u32,
 }
 #[allow(dead_code)] // final_mem read by the R5 bubblesort test (cfg(test)) only
 pub struct Trace { pub cycles: Vec<Cycle>, pub final_regs: [u32; NREG], pub final_ramver: [usize; NRAM], pub final_mem: [u32; NRAM] }
@@ -56,14 +57,53 @@ pub fn run_program(init_mem: &[u32; NRAM], word_overrides: &[(u64, u64)], load_o
 
 				let mut load = None;
 		let mut store = None;
-		if opcode == OP_LOAD && funct3 == 0x2 {
+		// M8-B T2 地址语义：lw/sw 沿用 M5 的「地址即字索引」（历史程序兼容，imm 步长 1）；
+		// 新字节/半字访存（lb/lbu/lh/lhu/sb/sh）按 RISC-V 字节地址：
+		// 字索引 = (addr>>2) mod NRAM，字内偏移 = addr & 3（lh/sh 需 addr[0]==0 半字对齐）。
+		let byte_word_index = |addr: u64| ((addr >> 2) as usize) % NRAM;
+		let mut ld_wb: Option<u32> = None; // 写回值（byte/half load 的提取结果）
+		if opcode == OP_LOAD && matches!(funct3, F3_LB | F3_LBU | F3_LH | F3_LHU) {
+			// M8-B T2：事件列记录整字 raw（RAM 字粒度，与排序论证 val_cons 一致）；提取在写回级。
+			let ld_addr = byte_word_index(addr_calc);
+			let v = ramver[ld_addr];
+			let w = mem[ld_addr];
+			let off = (addr_calc & 3) as u32;
+			let val = match funct3 {
+				F3_LB => ((((w >> (8 * off)) & 0xff) as u64) as i8 as i32) as u32,
+				F3_LBU => (w >> (8 * off)) & 0xff,
+				F3_LH => ((((w >> (16 * (off >> 1))) & 0xffff) as u64) as i16 as i32) as u32,
+				F3_LHU => (w >> (16 * (off >> 1))) & 0xffff,
+				_ => unreachable!(),
+			};
+			ld_wb = Some(val);
+			load = Some(MemAccess { addr: ld_addr, ver: v, val: w });
+		} else if opcode == OP_LOAD && funct3 == 0x2 {
 			let v = ramver[mem_addr];
 			let mut val = mem[mem_addr];
 			for &(cyc, ov) in load_overrides { if cyc == cycles.len() { val = ov; } }
 			load = Some(MemAccess { addr: mem_addr, ver: v, val });
-		} else if opcode == OP_STORE && funct3 == 0x2 {
+		} else if opcode == OP_STORE && matches!(funct3, F3_SB | F3_SH) {
 			// S-type sign-extended offset (imm_s, at inst[31:25]+inst[11:7]) — NOT imm_i, whose
 			// low 5 bits alias rs2 (this was a latent S-type store-address bug before R5).
+			let st_addr = (a.wrapping_add(imm_s as u64)) & 0xffffffff;
+			let st_wi = byte_word_index(st_addr);
+			let v = ramver[st_wi] + 1;
+			let off = (st_addr & 3) as u32;
+			let old = mem[st_wi];
+			let rs2v = regs[rs2 as usize];
+			let merged = match funct3 {
+				F3_SB => {
+					let shift = 8 * off;
+					(old & !(0xffu32 << shift)) | ((rs2v & 0xff) << shift)
+				}
+				F3_SH => {
+					let shift = 16 * (off >> 1);
+					(old & !(0xffffu32 << shift)) | ((rs2v & 0xffff) << shift)
+				}
+				_ => unreachable!(),
+			};
+			store = Some(MemAccess { addr: st_wi, ver: v, val: merged });
+		} else if opcode == OP_STORE && funct3 == 0x2 {
 			let st_addr = (a.wrapping_add(imm_s as u64)) & 0xffffffff;
 			let mem_addr = (st_addr % NRAM as u64) as usize;
 			let v = ramver[mem_addr] + 1;
@@ -93,18 +133,69 @@ pub fn run_program(init_mem: &[u32; NRAM], word_overrides: &[(u64, u64)], load_o
 		let is_imm = opcode == OP_OPIMM;
 		let is_reg = opcode == OP_OP;
 		let rd_mask = rd as usize;
+		let mut m_q: u32 = 0;
 		if is_reg {
 			let (x, y) = (regs[rs1 as usize] as u32, regs[rs2 as usize] as u32);
-			match funct3 {
-				0x0 => alu_sum = if funct7 == 0x20 { x.wrapping_sub(y) } else { x.wrapping_add(y) },
-				0x1 => alu_sum = x << (y & 0x1f),
-				0x2 => alu_sum = ((x as i32) < (y as i32)) as u32,
-				0x3 => alu_sum = (x < y) as u32,
-				0x4 => alu_sum = x ^ y,
-				0x5 => alu_sum = if funct7 == 0x20 { ((x as i32) >> (y & 0x1f)) as u32 } else { x >> (y & 0x1f) },
-				0x6 => alu_sum = x | y,
-				0x7 => alu_sum = x & y,
-				_ => {}
+			if funct7 == 0x01 {
+				// advice 商：div 有符号取 |x|/|y|；divu 取 x/y；mul/rem 无商要求（0 即可，
+				// mul 的 m_res 不读 q；rem 的断言走有符号列需要正确 q）
+				m_q = match funct3 {
+					0x4 => {
+						let ax = (x as i32).wrapping_abs();
+						let ay = (y as i32).wrapping_abs();
+						if ay == 0 { u32::MAX } else { (ax as i64 / ay as i64) as u32 }
+					}
+					0x5 => {
+						if y == 0 { u32::MAX } else { x / y }
+					}
+					0x6 => {
+						let ax = (x as i32).wrapping_abs();
+						let ay = (y as i32).wrapping_abs();
+						if ay == 0 { u32::MAX } else { (ax as i64 / ay as i64) as u32 }
+					}
+					0x7 => {
+						if y == 0 { u32::MAX } else { x / y }
+					}
+					_ => 0,
+				};
+				// M8-B T2：RV32M。RISC-V 语义：除零 div→-1/rem→x、remu→x、
+				// 溢出（MIN ÷ -1）div→MIN/rem→0。native 用 wrapping 语义直接表达。
+				alu_sum = match funct3 {
+					0x0 => x.wrapping_mul(y),
+					0x4 => {
+						if y == 0 {
+							u32::MAX // RISC-V：div 除零 → -1
+						} else {
+							(x as i32).wrapping_div(y as i32) as u32
+						}
+					}
+					0x5 => {
+						if y == 0 { u32::MAX } else { x / y }
+					}
+					0x6 => {
+						if y == 0 {
+							x // RISC-V：rem 除零 → 被除数
+						} else {
+							(x as i32).wrapping_rem(y as i32) as u32
+						}
+					}
+					0x7 => {
+						if y == 0 { x } else { x % y }
+					}
+					_ => 0,
+				};
+			} else {
+				match funct3 {
+					0x0 => alu_sum = if funct7 == 0x20 { x.wrapping_sub(y) } else { x.wrapping_add(y) },
+					0x1 => alu_sum = x << (y & 0x1f),
+					0x2 => alu_sum = ((x as i32) < (y as i32)) as u32,
+					0x3 => alu_sum = (x < y) as u32,
+					0x4 => alu_sum = x ^ y,
+					0x5 => alu_sum = if funct7 == 0x20 { ((x as i32) >> (y & 0x1f)) as u32 } else { x >> (y & 0x1f) },
+					0x6 => alu_sum = x | y,
+					0x7 => alu_sum = x & y,
+					_ => {}
+				}
 			}
 			is_alu_write = true;
 		} else if is_imm {
@@ -131,8 +222,9 @@ pub fn run_program(init_mem: &[u32; NRAM], word_overrides: &[(u64, u64)], load_o
 		} else if opcode == OP_JAL || opcode == OP_JALR {
 			alu_sum = (pc as u32).wrapping_add(4);
 			is_alu_write = true;
-		} else if opcode == OP_LOAD && funct3 == 0x2 {
-			alu_sum = load.unwrap().val;
+		} else if opcode == OP_LOAD {
+			// M8-B T2：lb/lbu/lh/lhu 写回提取值（ld_wb），lw 写回整字
+			alu_sum = ld_wb.unwrap_or_else(|| load.unwrap().val);
 			is_alu_write = true;
 		}
 
@@ -161,7 +253,7 @@ pub fn run_program(init_mem: &[u32; NRAM], word_overrides: &[(u64, u64)], load_o
 			pc.wrapping_add(4)
 		};
 
-		cycles.push(Cycle { pc, inst, reads, write, regver: cycle_rv, load, store, ramver: cycle_ramv, mem_addr });
+		cycles.push(Cycle { pc, inst, reads, write, regver: cycle_rv, load, store, ramver: cycle_ramv, mem_addr, m_q });
 		if pc == HALT_ADDR { break; }
 		pc = next_pc;
 	}

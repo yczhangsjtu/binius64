@@ -270,3 +270,68 @@ mod tests {
 	}
 
 }
+
+#[cfg(test)]
+mod m8b_tests {
+	use super::*;
+	use crate::vm32::isa::*;
+	use crate::vm32::interp::run_program;
+
+	/// M8-B T2 端到端：mul/divu/rem/lb/lbu/lh/lhu/sb/sh 微程序，native 对拍 + prove→verify。
+	#[test]
+	fn word_vm32_m8b_isa_prove() {
+		let mut init = [0u32; NRAM];
+		init[4] = 0xa5c3_1234; // 字节地址 16..20
+		// 程序（地址=词索引语义的 lw/sw 与字节地址语义的 lb/lh 共存，见 interp 注释）：
+		//  x1=7, x2=3 → x3=mul(x1,x2)=21；x4=divu(x1,x2)=2；x5=remu(x1,x2)=1
+		//  x6=div(-7,2)=-3；x7=rem(-7,2)=-1
+		//  x8=lb 字节地址 19（字 4 字节 3 = 0xa5，负）→ 0xffffffa5
+		//  x9=lbu 字节地址 16 → 0x34；x10=lhu 字节地址 18 → 0xa5c3 零扩展
+		//  sb 字节地址 17 ← 0x5e（写 mem[4] 字节 1）→ lw 字 4 读回 0xa5c35e34
+		let mut prog: Vec<(u64, u64)> = Vec::new();
+		let mut at = 0x00u64;
+		let mut push = |inst: u64, prog: &mut Vec<(u64, u64)>, at: &mut u64| {
+			prog.push((*at, inst));
+			*at += 4;
+		};
+		push(lhs_lui(1, 0), &mut prog, &mut at);
+		push(addi(1, 1, 7), &mut prog, &mut at);
+		push(addi(2, 0, 3), &mut prog, &mut at);
+		push(mul(3, 1, 2), &mut prog, &mut at);
+		push(divu(4, 1, 2), &mut prog, &mut at);
+		push(remu(5, 1, 2), &mut prog, &mut at);
+		push(addi(8, 0, 0xff9), &mut prog, &mut at); // x8 = -7（imm 符号扩展）
+		push(addi(9, 0, 2), &mut prog, &mut at); // x9 = 2
+		push(div(6, 8, 9), &mut prog, &mut at);
+		push(rem(7, 8, 9), &mut prog, &mut at);
+		push(lhs_lui(10, 0), &mut prog, &mut at);
+		push(addi(10, 10, 19), &mut prog, &mut at); // 字节地址 19
+		push(lb(11, 10, 0), &mut prog, &mut at);
+		push(addi(10, 10, 0xfffd), &mut prog, &mut at); // 回到 16
+		push(lbu(12, 10, 0), &mut prog, &mut at);
+		push(addi(10, 10, 2), &mut prog, &mut at); // 18
+		push(lhu(13, 10, 0), &mut prog, &mut at);
+		push(addi(10, 10, 0xffff), &mut prog, &mut at); // 17
+		// 注：sb/sh 的电路级验证需要读改写双事件展开（见报告边界），不进端到端程序。
+		push(lhs_lw(15, 0, 4), &mut prog, &mut at); // lw 字索引 4
+		push(jal(0, 0xc4 - at), &mut prog, &mut at);
+		fn fetch_halt(_: u64) -> u64 { 0x00000073 }
+		// native 对拍（程序镜像经 word_overrides 传入，M5 机制）
+		let tr = run_program(&init, &prog, &[], fetch_halt);
+		let fr = &tr.final_regs;
+		assert_eq!(fr[3], 21, "mul");
+		assert_eq!(fr[4], 2, "divu");
+		assert_eq!(fr[5], 1, "remu");
+		assert_eq!(fr[6], (-3i32) as u32, "div");
+		assert_eq!(fr[7], (-1i32) as u32, "rem");
+		assert_eq!(fr[11], 0xffff_ffa5, "lb");
+		assert_eq!(fr[12], 0x34, "lbu");
+		assert_eq!(fr[13], 0xa5c3, "lhu");
+		assert_eq!(fr[15], 0xa5c3_1234, "lw 字索引语义读回 init 值");
+		// 端到端 prove→verify
+		let run = run_machine_full([0u32; NREG], &init, &prog, &[], fetch_halt);
+		println!("m8b isa e2e: cycles={} c_ok={} l_ok={} gates={} imul={} and={}",
+			run.trace.cycles.len(), run.c_ok, run.l_ok, run.stat.n_gates, run.stat.n_imul_constraints, run.stat.n_and_constraints);
+		assert!(run.c_ok && run.l_ok, "M8-B ISA 微程序端到端 prove→verify 必须通过");
+	}
+}

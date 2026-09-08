@@ -137,6 +137,7 @@ pub fn run_machine_full(init: [u32; NREG], init_mem: &[u32; NRAM], word_override
 			w[iref.is_store[t]] = Word(0);
 		}
 	}
+	for t in 0..t_len { w[iref.m_q[t]] = Word(trace.cycles[t].m_q as u64); }
 	for r in 0..NREG { w[iref.init_regs[r]] = Word(init[r] as u64); w[iref.final_regs[r]] = Word(trace.final_regs[r] as u64); }
 	for a in 0..NRAM { w[iref.fin_ver[a]] = Word(trace.final_ramver[a] as u64); }
 	circuit.populate_wire_witness(&mut w).expect("witness fill");

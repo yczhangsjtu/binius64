@@ -7,6 +7,16 @@
 > 全门级 prove + 三表 logup* + verify（全部 `c_ok=true l_ok=true`），记录 CircuitStat 与耗时。
 > 复现：`cargo test -p binius-zkvm-slice --lib -- --ignored --nocapture bench_instruction`。
 
+## M8-B 增补（2026-09-08）：新增 ISA 行 + fetch/桥的公开列开销
+
+> 复现：`cargo test -p binius-zkvm-slice --lib word_vm32_m8b -- --nocapture`。
+> 新指令（mul/div/divu/rem/remu/lb/lbu/lh/lhu）暂未进 per-inst 基准循环；当前端到端证据：
+> **M8-B ISA 微程序（9 指令混合，21 cyc）：gates=23,368（imul=63, and=8,604），c_ok/l_ok 全绿**。
+> M 族断言的 imul 门为**每周期固定成本**（div 族验证序列 2 个 imul/周期 + mul 1 个/周期），
+> 与指令是否出现无关（全展开 mux 结构，同 M5 惯例）。
+> vm_ram_sort（N=16）在 T0/T1 公开化后：inout 1 词 → ~18.5k 词（inst/pc/排序流 8 列），
+> gates 905,168（+fetch logup/oracle relation 开销 <5%），honest prove 1.9s。
+
 ## 每指令成本表（真实运行输出，2026-09-07）
 
 ```
